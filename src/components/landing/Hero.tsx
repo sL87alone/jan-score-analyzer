@@ -1,12 +1,18 @@
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { motion } from "framer-motion";
-import { ArrowRight, ChevronDown } from "lucide-react";
-import heroPattern from "@/assets/hero-pattern.jpg";
+import { ArrowRight, ChevronDown, TrendingUp, LayoutGrid, Target } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+
+const featureBadges = [
+  { icon: Target, label: "Marks + Accuracy" },
+  { icon: LayoutGrid, label: "Section A/B Split" },
+  { icon: TrendingUp, label: "Expected Percentile (2025)" },
+];
 
 export function Hero() {
   return (
-    <section className="min-h-screen flex flex-col items-center justify-center pt-16 px-4 hero-gradient">
+    <section className="min-h-[90vh] flex flex-col items-center justify-center pt-16 px-4 hero-gradient">
       <div className="container mx-auto max-w-4xl text-center">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -14,19 +20,42 @@ export function Hero() {
           transition={{ duration: 0.6 }}
         >
           <h1 className="text-4xl md:text-6xl lg:text-7xl font-extrabold tracking-tight mb-6 text-balance">
-            Check your <span className="text-primary">Jan score</span> in 30 seconds.
+            Check your <span className="text-primary">Jan score</span> + expected percentile in 30 seconds.
           </h1>
         </motion.div>
 
-        <motion.p
+        <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, delay: 0.1 }}
-          className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto mb-10"
+          className="space-y-3 mb-8"
         >
-          Paste your JEE Main response-sheet link or upload your response HTML file. 
-          Get total marks, accuracy, negative marks, subject-wise breakdown, and a shareable report.
-        </motion.p>
+          <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto">
+            Paste your JEE Main response-sheet link or upload the HTML file.
+          </p>
+          <p className="text-base md:text-lg text-muted-foreground max-w-2xl mx-auto">
+            Get marks, accuracy, negative, section-wise (A/B) breakdown, and expected percentile (based on JEE Main 2025 data).
+          </p>
+        </motion.div>
+
+        {/* Feature Badges */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6, delay: 0.15 }}
+          className="flex flex-wrap justify-center gap-3 mb-10"
+        >
+          {featureBadges.map((badge, index) => (
+            <Badge
+              key={index}
+              variant="secondary"
+              className="px-4 py-2 text-sm font-medium bg-primary/10 text-primary border-primary/20 hover:bg-primary/15 transition-colors"
+            >
+              <badge.icon className="w-4 h-4 mr-2" />
+              {badge.label}
+            </Badge>
+          ))}
+        </motion.div>
 
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -46,25 +75,6 @@ export function Hero() {
               <ChevronDown className="w-5 h-5" />
             </Button>
           </a>
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 1, delay: 0.5 }}
-          className="mt-16 flex justify-center"
-        >
-          <div className="relative w-full max-w-3xl aspect-video rounded-2xl overflow-hidden border shadow-2xl bg-card">
-            <div className="absolute inset-0 flex items-center justify-center">
-              <div className="text-center p-8">
-                <div className="score-card inline-block mb-4">
-                  <span className="text-6xl font-mono font-bold">267</span>
-                  <span className="text-2xl ml-1">/300</span>
-                </div>
-                <p className="text-muted-foreground">Sample score preview</p>
-              </div>
-            </div>
-          </div>
         </motion.div>
       </div>
     </section>
