@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from "react";
-import { supabase } from "@/integrations/supabase/client";
 
 interface AdminSession {
   adminId: string;
@@ -23,8 +22,13 @@ export function useAdminAuth() {
         // Check if expired
         if (new Date(parsed.expiresAt) > new Date()) {
           setSession(parsed);
-          // Verify with server
-          verifySession(parsed.sessionToken);
+          // Verify with server (async, don't block)
+          verifySession(parsed.sessionToken).then((valid) => {
+            if (!valid) {
+              setSession(null);
+              localStorage.removeItem(STORAGE_KEY);
+            }
+          });
         } else {
           localStorage.removeItem(STORAGE_KEY);
         }
@@ -35,16 +39,8 @@ export function useAdminAuth() {
     setLoading(false);
   }, []);
 
-  const verifySession = async (token: string) => {
+  const verifySession = async (token: string): Promise<boolean> => {
     try {
-      const { data, error } = await supabase.functions.invoke("admin-auth", {
-        body: {},
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      });
-
-      // Handle query params for action
       const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-auth?action=verify`,
         {
@@ -58,16 +54,14 @@ export function useAdminAuth() {
       );
 
       const result = await response.json();
-
-      if (!result.valid) {
-        logout();
-      }
+      return result.valid === true;
     } catch (err) {
       console.error("Session verification failed:", err);
+      return false;
     }
   };
 
-  const login = useCallback(async (adminId: string, password: string) => {
+  const login = useCallback(async (adminId: string, password: string): Promise<boolean> => {
     setLoading(true);
     setError(null);
 

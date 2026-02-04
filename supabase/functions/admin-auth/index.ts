@@ -1,4 +1,4 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { encode as base64Encode, decode as base64Decode } from "https://deno.land/std@0.208.0/encoding/base64.ts";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -8,7 +8,6 @@ const corsHeaders = {
 // Simple timing-safe comparison
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) {
-    // Still do comparison to avoid timing leak on length
     let result = 0;
     for (let i = 0; i < a.length; i++) {
       result |= a.charCodeAt(i) ^ (b.charCodeAt(i % b.length) || 0);
@@ -22,7 +21,7 @@ function timingSafeEqual(a: string, b: string): boolean {
   return result === 0;
 }
 
-// Simple rate limiting using in-memory store (resets on function cold start)
+// Simple rate limiting using in-memory store
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
 
 function checkRateLimit(ip: string): boolean {
@@ -30,7 +29,7 @@ function checkRateLimit(ip: string): boolean {
   const record = loginAttempts.get(ip);
   
   if (!record || now > record.resetAt) {
-    loginAttempts.set(ip, { count: 1, resetAt: now + 60000 }); // 1 minute window
+    loginAttempts.set(ip, { count: 1, resetAt: now + 60000 });
     return true;
   }
   
@@ -42,18 +41,81 @@ function checkRateLimit(ip: string): boolean {
   return true;
 }
 
-// Generate a simple session token
-function generateSessionToken(): string {
-  const array = new Uint8Array(32);
-  crypto.getRandomValues(array);
-  return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
+// Create a simple JWT-like token (base64 encoded JSON with signature)
+async function createToken(payload: { adminId: string; exp: number }): Promise<string> {
+  const secret = Deno.env.get('ADMIN_PASSWORD') || 'fallback-secret';
+  const header = base64Encode(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const body = base64Encode(JSON.stringify(payload));
+  
+  // Create signature using HMAC-SHA256
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    encoder.encode(`${header}.${body}`)
+  );
+  
+  const sig = base64Encode(new Uint8Array(signature));
+  return `${header}.${body}.${sig}`;
 }
 
-// Store active sessions (in production, use Redis or DB)
-const activeSessions = new Map<string, { adminId: string; expiresAt: number }>();
+// Verify and decode token
+async function verifyToken(token: string): Promise<{ adminId: string; exp: number } | null> {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    
+    const [header, body, sig] = parts;
+    const secret = Deno.env.get('ADMIN_PASSWORD') || 'fallback-secret';
+    
+    // Verify signature
+    const encoder = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      'raw',
+      encoder.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+    
+    const sigBytes = base64Decode(sig);
+    const signatureValid = await crypto.subtle.verify(
+      'HMAC',
+      key,
+      new Uint8Array(sigBytes).buffer,
+      encoder.encode(`${header}.${body}`)
+    );
+    
+    if (!signatureValid) {
+      console.log('[admin-auth] Invalid signature');
+      return null;
+    }
+    
+    // Decode payload
+    const payload = JSON.parse(new TextDecoder().decode(base64Decode(body)));
+    
+    // Check expiration
+    if (Date.now() > payload.exp) {
+      console.log('[admin-auth] Token expired');
+      return null;
+    }
+    
+    return payload;
+  } catch (e) {
+    console.error('[admin-auth] Token verification error:', e);
+    return null;
+  }
+}
 
 Deno.serve(async (req) => {
-  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
@@ -65,7 +127,6 @@ Deno.serve(async (req) => {
 
   try {
     if (action === 'login') {
-      // Rate limiting
       const clientIP = req.headers.get('x-forwarded-for') || req.headers.get('cf-connecting-ip') || 'unknown';
       if (!checkRateLimit(clientIP)) {
         console.log(`[admin-auth] Rate limit exceeded for IP: ${clientIP}`);
@@ -84,7 +145,6 @@ Deno.serve(async (req) => {
         );
       }
 
-      // Get credentials from environment
       const expectedAdminId = Deno.env.get('ADMIN_ID');
       const expectedPassword = Deno.env.get('ADMIN_PASSWORD');
 
@@ -96,7 +156,6 @@ Deno.serve(async (req) => {
         );
       }
 
-      // Timing-safe comparison
       const idMatch = timingSafeEqual(adminId, expectedAdminId);
       const passwordMatch = timingSafeEqual(password, expectedPassword);
 
@@ -108,11 +167,9 @@ Deno.serve(async (req) => {
         );
       }
 
-      // Generate session token
-      const sessionToken = generateSessionToken();
-      const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days
-      
-      activeSessions.set(sessionToken, { adminId, expiresAt });
+      // Create JWT token (expires in 7 days)
+      const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
+      const sessionToken = await createToken({ adminId, exp: expiresAt });
       
       console.log(`[admin-auth] Login successful for: ${adminId}`);
 
@@ -138,12 +195,9 @@ Deno.serve(async (req) => {
         );
       }
 
-      const session = activeSessions.get(sessionToken);
+      const payload = await verifyToken(sessionToken);
       
-      if (!session || Date.now() > session.expiresAt) {
-        if (session) {
-          activeSessions.delete(sessionToken);
-        }
+      if (!payload) {
         return new Response(
           JSON.stringify({ valid: false, error: 'Session expired or invalid' }),
           { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -151,20 +205,14 @@ Deno.serve(async (req) => {
       }
 
       return new Response(
-        JSON.stringify({ valid: true, adminId: session.adminId }),
+        JSON.stringify({ valid: true, adminId: payload.adminId }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
     if (action === 'logout') {
-      const authHeader = req.headers.get('authorization');
-      const sessionToken = authHeader?.replace('Bearer ', '');
-
-      if (sessionToken) {
-        activeSessions.delete(sessionToken);
-        console.log(`[admin-auth] Logout successful`);
-      }
-
+      // With JWT, logout is handled client-side by deleting the token
+      console.log(`[admin-auth] Logout requested`);
       return new Response(
         JSON.stringify({ success: true }),
         { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
