@@ -147,7 +147,18 @@ Deno.serve(async (req) => {
       );
     }
 
-    // 4. Get final count for verification
+    // 4. Update test's updated_at timestamp
+    const { error: updateError } = await supabase
+      .from("tests")
+      .update({ updated_at: new Date().toISOString() })
+      .eq("id", testId);
+
+    if (updateError) {
+      console.error("Error updating test timestamp:", updateError);
+      // Non-fatal, continue
+    }
+
+    // 5. Get final count for verification (sanity check)
     const { data: verifyData, error: verifyError } = await supabase
       .from("answer_keys")
       .select("subject")
