@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
@@ -14,11 +14,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ArrowLeft, Upload, Loader2, AlertCircle, CheckCircle, FileText, LogOut, Calendar, Clock } from "lucide-react";
+import { ArrowLeft, Upload, Loader2, AlertCircle, CheckCircle, FileText, LogOut, Calendar, Clock, Zap } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Test } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
-import { EXAM_DATES, SHIFTS } from "@/lib/examDates";
+import { EXAM_DATES, SHIFTS, getExamDateLabel } from "@/lib/examDates";
+import { BUILT_IN_KEYS, getBuiltInKeyStats } from "@/lib/builtInKeys";
 
 interface ParsedKey {
   question_id: string;
@@ -51,7 +52,7 @@ const AdminUploadKey = () => {
   const [error, setError] = useState("");
   const [dateError, setDateError] = useState("");
   const [shiftError, setShiftError] = useState("");
-
+  const [quickImporting, setQuickImporting] = useState(false);
   useEffect(() => {
     checkAuth();
     fetchTests();
@@ -146,9 +147,81 @@ const AdminUploadKey = () => {
     navigate("/admin");
   };
 
-  const getExamDateLabel = (isoDate: string): string => {
-    const found = EXAM_DATES.find((d) => d.value === isoDate);
-    return found?.label || isoDate;
+  const handleQuickImport = async (keySet: typeof BUILT_IN_KEYS[0]) => {
+    setQuickImporting(true);
+    setError("");
+
+    try {
+      // 1. Upsert the test
+      const { data: existingTest } = await supabase
+        .from("tests")
+        .select("id")
+        .eq("exam_date", keySet.exam_date)
+        .eq("shift", keySet.shift)
+        .maybeSingle();
+
+      let testId: string;
+
+      if (existingTest) {
+        testId = existingTest.id;
+      } else {
+        // Create new test with default marking rules
+        const { data: newTest, error: testError } = await supabase
+          .from("tests")
+          .insert({
+            name: `JEE Main - ${getExamDateLabel(keySet.exam_date)} ${keySet.shift}`,
+            exam_date: keySet.exam_date,
+            shift: keySet.shift,
+            is_active: true,
+            marking_rules_json: {
+              mcq_single: { correct: 4, wrong: -1, unattempted: 0 },
+              numerical: { correct: 4, wrong: -1, unattempted: 0 },
+              msq: { correct: 4, wrong: -2, unattempted: 0 },
+            },
+          })
+          .select("id")
+          .single();
+
+        if (testError) throw testError;
+        testId = newTest.id;
+      }
+
+      // 2. Prepare answer keys for upsert
+      const keysToUpsert = keySet.keys.map((key) => ({
+        test_id: testId,
+        question_id: key.question_id,
+        subject: key.subject,
+        question_type: key.type,
+        correct_option_ids: key.correct_option_ids || null,
+        correct_numeric_value: key.correct_numeric_value ?? null,
+        numeric_tolerance: 0,
+        is_cancelled: false,
+        is_bonus: false,
+      }));
+
+      // 3. Upsert answer keys
+      const { error: upsertError } = await supabase
+        .from("answer_keys")
+        .upsert(keysToUpsert, { onConflict: "test_id,question_id" });
+
+      if (upsertError) throw upsertError;
+
+      // 4. Get stats
+      const stats = getBuiltInKeyStats(keySet.keys);
+
+      toast({
+        title: "Import Successful!",
+        description: `Imported ${stats.total} answer keys. Math: ${stats.mathematics}, Physics: ${stats.physics}, Chemistry: ${stats.chemistry}`,
+      });
+
+      // Refresh tests list
+      fetchTests();
+    } catch (err) {
+      console.error("Quick import error:", err);
+      setError("Failed to import answer keys. Please try again.");
+    } finally {
+      setQuickImporting(false);
+    }
   };
 
   const parseCSV = () => {
@@ -341,6 +414,63 @@ const AdminUploadKey = () => {
           transition={{ duration: 0.5 }}
           className="space-y-6"
         >
+          {/* Quick Import Section */}
+          <Card className="border-primary/50 bg-primary/5">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Zap className="w-5 h-5 text-primary" />
+                Quick Import (Built-in Keys)
+              </CardTitle>
+              <CardDescription>
+                One-click import for available answer keys
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {BUILT_IN_KEYS.map((keySet) => {
+                const stats = getBuiltInKeyStats(keySet.keys);
+                return (
+                  <div
+                    key={`${keySet.exam_date}-${keySet.shift}`}
+                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 bg-background rounded-lg border"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="secondary">
+                          <Calendar className="w-3 h-3 mr-1" />
+                          {getExamDateLabel(keySet.exam_date)}
+                        </Badge>
+                        <Badge variant="outline">
+                          <Clock className="w-3 h-3 mr-1" />
+                          {keySet.shift}
+                        </Badge>
+                      </div>
+                      <p className="text-sm text-muted-foreground">
+                        {stats.total} questions • Math: {stats.mathematics}, Physics: {stats.physics}, Chemistry: {stats.chemistry}
+                      </p>
+                    </div>
+                    <Button
+                      onClick={() => handleQuickImport(keySet)}
+                      disabled={quickImporting}
+                      className="shrink-0"
+                    >
+                      {quickImporting ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Importing...
+                        </>
+                      ) : (
+                        <>
+                          <Zap className="w-4 h-4 mr-2" />
+                          Import Answer Key
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
+
           {/* Instructions */}
           <Card>
             <CardHeader>
