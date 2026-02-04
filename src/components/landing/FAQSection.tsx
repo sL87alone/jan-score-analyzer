@@ -5,6 +5,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
+import { APP_NAME } from "@/lib/config";
 
 const faqs = [
   {
@@ -44,7 +45,7 @@ export function FAQSection() {
             Frequently Asked Questions
           </h2>
           <p className="text-muted-foreground">
-            Common questions about JanScore
+            Common questions about {APP_NAME}
           </p>
         </motion.div>
 

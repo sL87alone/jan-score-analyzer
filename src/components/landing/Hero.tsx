@@ -20,7 +20,7 @@ export function Hero() {
           transition={{ duration: 0.6 }}
         >
           <h1 className="text-4xl md:text-6xl lg:text-7xl font-extrabold tracking-tight mb-6 text-balance">
-            Check your <span className="text-primary">Jan score</span> + expected percentile in 30 seconds.
+            Check your <span className="text-primary">JEE score</span> + expected percentile in 30 seconds.
           </h1>
         </motion.div>
 
@@ -65,7 +65,7 @@ export function Hero() {
         >
           <Link to="/analyze">
             <Button size="lg" className="glow-effect text-lg px-8 py-6 gap-2">
-              Check My Jan Score
+              Check My Score
               <ArrowRight className="w-5 h-5" />
             </Button>
           </Link>

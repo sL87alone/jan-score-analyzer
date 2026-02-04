@@ -1,5 +1,6 @@
 import { Zap } from "lucide-react";
 import { Link } from "react-router-dom";
+import { APP_NAME } from "@/lib/config";
 
 export function Footer() {
   return (
@@ -10,7 +11,7 @@ export function Footer() {
             <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
               <Zap className="w-5 h-5 text-primary-foreground" />
             </div>
-            <span className="font-bold text-lg">JanScore</span>
+            <span className="font-bold text-lg">{APP_NAME}</span>
           </div>
 
           <div className="flex items-center gap-6 text-sm text-muted-foreground">
@@ -26,10 +27,10 @@ export function Footer() {
         <div className="mt-8 pt-8 border-t text-center">
           <p className="text-sm text-muted-foreground max-w-2xl mx-auto">
             <strong>Disclaimer:</strong> This tool is for analysis only. Final score depends on official results 
-            released by NTA. JanScore is not affiliated with NTA or any official body.
+            released by NTA. {APP_NAME} is not affiliated with NTA or any official body.
           </p>
           <p className="text-xs text-muted-foreground mt-4">
-            © {new Date().getFullYear()} JanScore. All rights reserved.
+            © {new Date().getFullYear()} {APP_NAME}. All rights reserved.
           </p>
         </div>
       </div>
