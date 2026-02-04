@@ -287,11 +287,17 @@ const Result = () => {
   };
 
   const handleCopyLink = async () => {
-    const link = window.location.href;
+    // Use the share token link if available, otherwise use direct ID link
+    const shareToken = submission?.share_token;
+    const link = shareToken 
+      ? `${window.location.origin}/r/${shareToken}`
+      : window.location.href;
     await navigator.clipboard.writeText(link);
     toast({
-      title: "Link Copied!",
-      description: "Share link has been copied to clipboard.",
+      title: "Share Link Copied!",
+      description: shareToken 
+        ? "Secure share link has been copied to clipboard." 
+        : "Link has been copied to clipboard.",
     });
   };
 

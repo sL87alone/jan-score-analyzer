@@ -34,6 +34,8 @@ export interface Submission {
   test_id: string | null;
   source_type: "url" | "html";
   share_enabled: boolean;
+  share_token: string | null;
+  user_id: string | null;
   total_marks: number;
   total_attempted: number;
   total_correct: number;

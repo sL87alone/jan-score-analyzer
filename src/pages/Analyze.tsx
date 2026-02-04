@@ -73,14 +73,22 @@ const Analyze = () => {
   // Fetch all active tests for reference
 
   const fetchAllTests = async () => {
-    const { data, error } = await supabase
-      .from("tests")
-      .select("*")
-      .eq("is_active", true)
-      .not("exam_date", "is", null);
+    // Use the secure RPC that doesn't expose marking rules
+    const { data, error } = await supabase.rpc("get_active_tests");
 
     if (data) {
-      setTests(data as unknown as Test[]);
+      // Map RPC result to Test type (marking rules are fetched server-side during scoring)
+      const testsData = (data as any[]).map(t => ({
+        id: t.id,
+        name: t.name,
+        shift: t.shift,
+        exam_date: t.exam_date,
+        is_active: t.is_active,
+        marking_rules_json: {}, // Not exposed to client
+        created_at: "",
+        updated_at: "",
+      }));
+      setTests(testsData as Test[]);
     }
     if (error) {
       console.error("Error fetching tests:", error);

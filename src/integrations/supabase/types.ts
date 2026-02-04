@@ -235,6 +235,16 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      get_active_tests: {
+        Args: never
+        Returns: Database["public"]["CompositeTypes"]["public_test_info"][]
+        SetofOptions: {
+          from: "*"
+          to: "public_test_info"
+          isOneToOne: false
+          isSetofReturn: true
+        }
+      }
       get_answer_keys_for_test: {
         Args: { p_test_id: string }
         Returns: {
@@ -247,6 +257,16 @@ export type Database = {
           question_type: string
           subject: string
         }[]
+      }
+      get_public_report: {
+        Args: { p_share_token: string }
+        Returns: Database["public"]["CompositeTypes"]["public_report_data"]
+        SetofOptions: {
+          from: "*"
+          to: "public_report_data"
+          isOneToOne: true
+          isSetofReturn: false
+        }
       }
       get_test_marking_rules: { Args: { p_test_id: string }; Returns: Json }
       has_role: {
@@ -262,7 +282,30 @@ export type Database = {
       app_role: "admin" | "user"
     }
     CompositeTypes: {
-      [_ in never]: never
+      public_report_data: {
+        id: string | null
+        test_name: string | null
+        test_shift: string | null
+        exam_date: string | null
+        total_marks: number | null
+        total_attempted: number | null
+        total_correct: number | null
+        total_wrong: number | null
+        total_unattempted: number | null
+        accuracy_percentage: number | null
+        negative_marks: number | null
+        math_marks: number | null
+        physics_marks: number | null
+        chemistry_marks: number | null
+        created_at: string | null
+      }
+      public_test_info: {
+        id: string | null
+        name: string | null
+        shift: string | null
+        exam_date: string | null
+        is_active: boolean | null
+      }
     }
   }
 }
