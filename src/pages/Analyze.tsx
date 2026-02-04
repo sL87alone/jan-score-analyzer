@@ -22,8 +22,9 @@ import { parseResponseSheetHTML, validateResponseSheet, getParsingDiagnostic, ge
 import { calculateScores } from "@/lib/scoring";
 import { Test, MarkingRules, ParsedResponse } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
-import { EXAM_DATES, SHIFTS } from "@/lib/examDates";
+import { EXAM_DATES, SHIFTS, getExamDateLabel } from "@/lib/examDates";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { normalizeShift, normalizeExamDate } from "@/lib/normalize";
 const Analyze = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -37,12 +38,14 @@ const Analyze = () => {
   const [availableShifts, setAvailableShifts] = useState<string[]>([]);
   const [selectedShift, setSelectedShift] = useState("");
   const [selectedTestId, setSelectedTestId] = useState("");
+  const [answerKeyCount, setAnswerKeyCount] = useState<number | null>(null);
   const [tests, setTests] = useState<Test[]>([]);
   
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [dateError, setDateError] = useState("");
   const [shiftError, setShiftError] = useState("");
+  const [testLookupError, setTestLookupError] = useState("");
   const [showUploadFallback, setShowUploadFallback] = useState(false);
   
   // Debug and verification state
@@ -100,20 +103,105 @@ const Analyze = () => {
     }
   }, [selectedDate, tests]);
 
-  // When shift changes, resolve test_id
+  // When shift changes, resolve test_id and verify answer keys exist
   useEffect(() => {
-    if (selectedDate && selectedShift) {
-      const matchingTest = tests.find(
-        t => t.exam_date === selectedDate && t.shift === selectedShift
-      );
-      if (matchingTest) {
-        setSelectedTestId(matchingTest.id);
-      } else {
+    const resolveTestAndKeys = async () => {
+      setTestLookupError("");
+      setAnswerKeyCount(null);
+      
+      if (!selectedDate || !selectedShift) {
         setSelectedTestId("");
+        return;
       }
-    } else {
-      setSelectedTestId("");
-    }
+
+      // Normalize values for consistent lookup
+      const normalizedDate = normalizeExamDate(selectedDate);
+      const normalizedShift = normalizeShift(selectedShift);
+
+      if (!normalizedDate || !normalizedShift) {
+        setTestLookupError("Invalid date or shift format.");
+        setSelectedTestId("");
+        return;
+      }
+
+      console.log("Looking up test:", { normalizedDate, normalizedShift });
+
+      // First check local cache
+      const localMatch = tests.find(
+        t => t.exam_date === normalizedDate && t.shift === normalizedShift
+      );
+
+      if (localMatch) {
+        console.log("Found test in local cache:", localMatch.id);
+        setSelectedTestId(localMatch.id);
+        
+        // Verify answer keys exist
+        const { data: keyData, error: keyError } = await supabase
+          .from("answer_keys")
+          .select("id", { count: "exact", head: true })
+          .eq("test_id", localMatch.id);
+        
+        if (keyError) {
+          console.error("Error checking answer keys:", keyError);
+          setAnswerKeyCount(0);
+        } else {
+          // Use count from response
+          const { count } = await supabase
+            .from("answer_keys")
+            .select("*", { count: "exact", head: true })
+            .eq("test_id", localMatch.id);
+          
+          console.log("Answer key count:", count);
+          setAnswerKeyCount(count || 0);
+          
+          if ((count || 0) < 75) {
+            setTestLookupError(`Answer key incomplete: only ${count || 0} of 75 questions found.`);
+          }
+        }
+      } else {
+        // Try direct DB lookup in case tests array is stale
+        console.log("Not in local cache, querying DB directly");
+        const { data: dbTest, error: dbError } = await supabase
+          .from("tests")
+          .select("id")
+          .eq("exam_date", normalizedDate)
+          .eq("shift", normalizedShift)
+          .eq("is_active", true)
+          .maybeSingle();
+
+        if (dbError) {
+          console.error("DB lookup error:", dbError);
+          setTestLookupError("Error looking up test configuration.");
+          setSelectedTestId("");
+          return;
+        }
+
+        if (dbTest) {
+          console.log("Found test in DB:", dbTest.id);
+          setSelectedTestId(dbTest.id);
+          
+          // Verify answer keys exist
+          const { count } = await supabase
+            .from("answer_keys")
+            .select("*", { count: "exact", head: true })
+            .eq("test_id", dbTest.id);
+          
+          console.log("Answer key count:", count);
+          setAnswerKeyCount(count || 0);
+          
+          if ((count || 0) < 75) {
+            setTestLookupError(`Answer key incomplete: only ${count || 0} of 75 questions found.`);
+          }
+        } else {
+          console.log("No test found in DB for:", { normalizedDate, normalizedShift });
+          setTestLookupError(`Answer key not found in database for ${getExamDateLabel(normalizedDate)} (${normalizedShift}). Admin must import the key for this shift.`);
+          setSelectedTestId("");
+          setAnswerKeyCount(0);
+        }
+      }
+    };
+
+    resolveTestAndKeys();
   }, [selectedDate, selectedShift, tests]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -404,8 +492,8 @@ const Analyze = () => {
     }
   };
 
-  const isSubmitDisabled = !selectedDate || !selectedShift || loading;
-  const isConfirmDisabled = loading || !selectedDate || !selectedShift || !selectedTestId || !parsedPreview;
+  const isSubmitDisabled = !selectedDate || !selectedShift || loading || !selectedTestId;
+  const isConfirmDisabled = loading || !selectedDate || !selectedShift || !selectedTestId || !parsedPreview || (answerKeyCount !== null && answerKeyCount < 75);
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -505,6 +593,28 @@ const Analyze = () => {
                     )}
                   </div>
                 </div>
+
+                {/* Test/Key Status Indicator */}
+                {selectedDate && selectedShift && (
+                  <div className="p-3 rounded-lg border bg-muted/50">
+                    {selectedTestId && answerKeyCount !== null && answerKeyCount >= 75 ? (
+                      <div className="flex items-center gap-2 text-sm text-primary">
+                        <CheckCircle className="w-4 h-4" />
+                        <span>Answer key found: {answerKeyCount} questions</span>
+                      </div>
+                    ) : testLookupError ? (
+                      <div className="flex items-start gap-2 text-sm text-destructive">
+                        <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                        <span>{testLookupError}</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Checking answer key availability...</span>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Input Method Tabs */}
                 <Tabs value={inputMethod} onValueChange={(v) => setInputMethod(v as "url" | "html")}>
@@ -616,11 +726,15 @@ const Analyze = () => {
                         
                         {/* Show current selection status */}
                         <div className="text-xs text-muted-foreground mt-2 p-2 bg-background/50 rounded">
-                          <p>Selected: {selectedDate ? EXAM_DATES.find(d => d.value === selectedDate)?.label : "No date"} | {selectedShift || "No shift"}</p>
-                          {selectedTestId ? (
-                            <p className="text-primary">✓ Answer key found</p>
+                          <p>Selected: {selectedDate ? getExamDateLabel(selectedDate) : "No date"} | {selectedShift || "No shift"}</p>
+                          {selectedTestId && answerKeyCount !== null && answerKeyCount >= 75 ? (
+                            <p className="text-primary">✓ Answer key found: {answerKeyCount} questions</p>
+                          ) : testLookupError ? (
+                            <p className="text-destructive">✗ {testLookupError}</p>
+                          ) : selectedTestId ? (
+                            <p className="text-amber-600">⚠ Answer key incomplete ({answerKeyCount || 0} of 75)</p>
                           ) : (
-                            <p className="text-destructive">✗ No answer key available for this date/shift</p>
+                            <p className="text-destructive">✗ No answer key configured for this date/shift</p>
                           )}
                         </div>
                         
@@ -648,8 +762,10 @@ const Analyze = () => {
                             {!selectedDate || !selectedShift 
                               ? "Please select exam date and shift above." 
                               : !selectedTestId 
-                                ? "Answer key not available for this exam date/shift." 
-                                : ""}
+                                ? `Answer key not found in database for ${selectedDate ? getExamDateLabel(selectedDate) : "this date"} (${selectedShift || "no shift"}). Admin must import the key for this shift.`
+                                : answerKeyCount !== null && answerKeyCount < 75
+                                  ? `Answer key incomplete (${answerKeyCount} of 75 questions).`
+                                  : ""}
                           </p>
                         )}
                       </div>
