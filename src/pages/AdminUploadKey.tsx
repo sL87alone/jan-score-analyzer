@@ -446,16 +446,34 @@ const AdminUploadKey = () => {
       <header className="bg-card border-b sticky top-0 z-50">
         <div className="container mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <Button variant="ghost" size="icon" onClick={() => navigate("/admin/tests")}>
-              <ArrowLeft className="w-4 h-4" />
-            </Button>
-            <h1 className="text-xl font-bold">Upload Answer Keys</h1>
-            <Badge variant="secondary">CSV</Badge>
+            <h1 className="text-xl font-bold">Admin Dashboard</h1>
+            <Badge variant="outline" className="font-mono">
+              Admin: {adminId || "—"}
+            </Badge>
           </div>
-          <Button variant="ghost" size="sm" onClick={handleLogout}>
-            <LogOut className="w-4 h-4 mr-2" />
-            Logout
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={() => navigate("/admin/tests")}
+            >
+              <FileText className="w-4 h-4 mr-2" />
+              Tests
+            </Button>
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={() => navigate("/admin/upload-key")}
+              className="font-medium"
+            >
+              <Upload className="w-4 h-4 mr-2" />
+              Upload Keys
+            </Button>
+            <Button variant="ghost" size="sm" onClick={handleLogout}>
+              <LogOut className="w-4 h-4 mr-2" />
+              Logout
+            </Button>
+          </div>
         </div>
       </header>
 
