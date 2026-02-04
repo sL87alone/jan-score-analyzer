@@ -59,6 +59,20 @@ const Result = () => {
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
   const [subjectStats, setSubjectStats] = useState<SubjectStats[]>([]);
+  
+  // Computed overall stats - single source of truth from responses
+  const [computedStats, setComputedStats] = useState<{
+    total_marks: number;
+    total_attempted: number;
+    total_correct: number;
+    total_wrong: number;
+    total_unattempted: number;
+    accuracy_percentage: number;
+    negative_marks: number;
+    math_marks: number;
+    physics_marks: number;
+    chemistry_marks: number;
+  } | null>(null);
 
   useEffect(() => {
     if (id) {
@@ -110,8 +124,15 @@ const Result = () => {
       if (respData) {
         setResponses(respData as unknown as ResponseType[]);
 
-        // Calculate subject stats from responses
-        const stats: Record<string, SubjectStats> = {};
+        // Calculate subject stats from responses - SINGLE SOURCE OF TRUTH
+        const stats: Record<string, SubjectStats & { negative: number }> = {};
+        let totalMarks = 0;
+        let totalAttempted = 0;
+        let totalCorrect = 0;
+        let totalWrong = 0;
+        let totalUnattempted = 0;
+        let totalNegative = 0;
+
         respData.forEach((r: any) => {
           const subject = r.subject || "Unknown";
           if (!stats[subject]) {
@@ -123,17 +144,30 @@ const Result = () => {
               wrong: 0,
               unattempted: 0,
               accuracy: 0,
+              negative: 0,
             };
           }
-          stats[subject].marks += r.marks_awarded || 0;
+          const marksAwarded = r.marks_awarded || 0;
+          stats[subject].marks += marksAwarded;
+          totalMarks += marksAwarded;
+          
           if (r.status === "correct") {
             stats[subject].correct++;
             stats[subject].attempted++;
+            totalCorrect++;
+            totalAttempted++;
           } else if (r.status === "wrong") {
             stats[subject].wrong++;
             stats[subject].attempted++;
+            totalWrong++;
+            totalAttempted++;
+            if (marksAwarded < 0) {
+              stats[subject].negative += Math.abs(marksAwarded);
+              totalNegative += Math.abs(marksAwarded);
+            }
           } else if (r.status === "unattempted") {
             stats[subject].unattempted++;
+            totalUnattempted++;
           }
         });
 
@@ -142,6 +176,31 @@ const Result = () => {
         });
 
         setSubjectStats(Object.values(stats));
+        
+        // Compute overall stats from responses (single source of truth)
+        const mathStats = stats["Mathematics"] || { marks: 0 };
+        const physicsStats = stats["Physics"] || { marks: 0 };
+        const chemistryStats = stats["Chemistry"] || { marks: 0 };
+        
+        const computed = {
+          total_marks: totalMarks,
+          total_attempted: totalAttempted,
+          total_correct: totalCorrect,
+          total_wrong: totalWrong,
+          total_unattempted: totalUnattempted,
+          accuracy_percentage: totalAttempted > 0 
+            ? Math.round((totalCorrect / totalAttempted) * 100 * 100) / 100 
+            : 0,
+          negative_marks: totalNegative,
+          math_marks: mathStats.marks,
+          physics_marks: physicsStats.marks,
+          chemistry_marks: chemistryStats.marks,
+        };
+        
+        setComputedStats(computed);
+        
+        console.log("Computed stats from responses:", computed);
+        console.log("Subject stats:", Object.values(stats));
       }
     } catch (err) {
       console.error("Error fetching results:", err);
@@ -181,21 +240,33 @@ const Result = () => {
       doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 42);
     }
 
-    // Score summary
+    // Score summary - use computedStats as single source of truth
+    const stats = computedStats || {
+      total_marks: submission.total_marks,
+      total_attempted: submission.total_attempted,
+      total_correct: submission.total_correct,
+      total_wrong: submission.total_wrong,
+      accuracy_percentage: submission.accuracy_percentage,
+      negative_marks: submission.negative_marks,
+      math_marks: submission.math_marks,
+      physics_marks: submission.physics_marks,
+      chemistry_marks: submission.chemistry_marks,
+    };
+    
     doc.setFontSize(16);
-    doc.text(`Total Score: ${submission.total_marks}`, 14, 55);
+    doc.text(`Total Score: ${stats.total_marks}`, 14, 55);
     
     doc.setFontSize(11);
-    doc.text(`Attempted: ${submission.total_attempted}`, 14, 65);
-    doc.text(`Correct: ${submission.total_correct}`, 14, 72);
-    doc.text(`Wrong: ${submission.total_wrong}`, 14, 79);
-    doc.text(`Accuracy: ${submission.accuracy_percentage}%`, 14, 86);
-    doc.text(`Negative Marks: ${submission.negative_marks}`, 14, 93);
+    doc.text(`Attempted: ${stats.total_attempted}`, 14, 65);
+    doc.text(`Correct: ${stats.total_correct}`, 14, 72);
+    doc.text(`Wrong: ${stats.total_wrong}`, 14, 79);
+    doc.text(`Accuracy: ${stats.accuracy_percentage}%`, 14, 86);
+    doc.text(`Negative Marks: ${stats.negative_marks}`, 14, 93);
 
     // Subject breakdown
-    doc.text(`Mathematics: ${submission.math_marks}`, 100, 65);
-    doc.text(`Physics: ${submission.physics_marks}`, 100, 72);
-    doc.text(`Chemistry: ${submission.chemistry_marks}`, 100, 79);
+    doc.text(`Mathematics: ${stats.math_marks}`, 100, 65);
+    doc.text(`Physics: ${stats.physics_marks}`, 100, 72);
+    doc.text(`Chemistry: ${stats.chemistry_marks}`, 100, 79);
 
     // Mistakes table
     const wrongResponses = responses.filter((r) => r.status === "wrong");
@@ -380,42 +451,42 @@ const Result = () => {
               </div>
             </div>
 
-            {/* Score Card */}
+            {/* Score Card - Uses computedStats from responses as single source of truth */}
             <div className="score-card mb-8">
               <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
                 <div>
                   <p className="text-white/70 text-sm mb-1">Total Score</p>
                   <div className="flex items-baseline gap-2">
                     <span className="text-5xl md:text-6xl font-mono font-bold">
-                      {submission.total_marks}
+                      {computedStats?.total_marks ?? submission.total_marks}
                     </span>
                     <span className="text-2xl text-white/70">/300</span>
                   </div>
                 </div>
                 <div className="grid grid-cols-3 gap-4 md:gap-8 text-center">
                   <div>
-                    <p className="text-3xl font-mono font-bold">{submission.total_attempted}</p>
+                    <p className="text-3xl font-mono font-bold">{computedStats?.total_attempted ?? submission.total_attempted}</p>
                     <p className="text-white/70 text-sm">Attempted</p>
                   </div>
                   <div>
-                    <p className="text-3xl font-mono font-bold">{submission.accuracy_percentage}%</p>
+                    <p className="text-3xl font-mono font-bold">{computedStats?.accuracy_percentage ?? submission.accuracy_percentage}%</p>
                     <p className="text-white/70 text-sm">Accuracy</p>
                   </div>
                   <div>
-                    <p className="text-3xl font-mono font-bold text-red-300">-{submission.negative_marks}</p>
+                    <p className="text-3xl font-mono font-bold text-destructive/80">-{computedStats?.negative_marks ?? submission.negative_marks}</p>
                     <p className="text-white/70 text-sm">Negative</p>
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Stats Row */}
+            {/* Stats Row - Uses computedStats from responses */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
               <Card>
                 <CardContent className="pt-4">
                   <div className="flex items-center gap-2">
                     <CheckCircle className="w-5 h-5 text-success" />
-                    <span className="text-2xl font-mono font-bold">{submission.total_correct}</span>
+                    <span className="text-2xl font-mono font-bold">{computedStats?.total_correct ?? submission.total_correct}</span>
                   </div>
                   <p className="text-sm text-muted-foreground">Correct</p>
                 </CardContent>
@@ -424,7 +495,7 @@ const Result = () => {
                 <CardContent className="pt-4">
                   <div className="flex items-center gap-2">
                     <XCircle className="w-5 h-5 text-destructive" />
-                    <span className="text-2xl font-mono font-bold">{submission.total_wrong}</span>
+                    <span className="text-2xl font-mono font-bold">{computedStats?.total_wrong ?? submission.total_wrong}</span>
                   </div>
                   <p className="text-sm text-muted-foreground">Wrong</p>
                 </CardContent>
@@ -433,7 +504,7 @@ const Result = () => {
                 <CardContent className="pt-4">
                   <div className="flex items-center gap-2">
                     <MinusCircle className="w-5 h-5 text-muted-foreground" />
-                    <span className="text-2xl font-mono font-bold">{submission.total_unattempted}</span>
+                    <span className="text-2xl font-mono font-bold">{computedStats?.total_unattempted ?? submission.total_unattempted}</span>
                   </div>
                   <p className="text-sm text-muted-foreground">Unattempted</p>
                 </CardContent>
@@ -442,7 +513,7 @@ const Result = () => {
                 <CardContent className="pt-4">
                   <div className="flex items-center gap-2">
                     <Target className="w-5 h-5 text-primary" />
-                    <span className="text-2xl font-mono font-bold">{submission.accuracy_percentage}%</span>
+                    <span className="text-2xl font-mono font-bold">{computedStats?.accuracy_percentage ?? submission.accuracy_percentage}%</span>
                   </div>
                   <p className="text-sm text-muted-foreground">Accuracy</p>
                 </CardContent>
@@ -452,7 +523,15 @@ const Result = () => {
             {/* Subject Tabs */}
             <Card className="mb-8">
               <CardHeader>
-                <CardTitle>Subject-wise Breakdown</CardTitle>
+                <CardTitle className="flex items-center justify-between">
+                  <span>Subject-wise Breakdown</span>
+                  {subjectStats.length > 0 && subjectStats.length < 3 && (
+                    <Badge variant="outline" className="ml-2 text-amber-600 border-amber-600">
+                      <AlertTriangle className="w-3 h-3 mr-1" />
+                      Partial: {3 - subjectStats.length} subject(s) missing
+                    </Badge>
+                  )}
+                </CardTitle>
               </CardHeader>
               <CardContent>
                 <Tabs defaultValue="Mathematics">
@@ -473,9 +552,9 @@ const Result = () => {
 
                   {["Mathematics", "Physics", "Chemistry"].map((subject) => {
                     const stats = subjectStats.find((s) => s.subject === subject) || {
-                      marks: subject === "Mathematics" ? submission.math_marks :
-                             subject === "Physics" ? submission.physics_marks :
-                             submission.chemistry_marks,
+                      marks: subject === "Mathematics" ? (computedStats?.math_marks ?? submission.math_marks) :
+                             subject === "Physics" ? (computedStats?.physics_marks ?? submission.physics_marks) :
+                             (computedStats?.chemistry_marks ?? submission.chemistry_marks),
                       attempted: 0,
                       correct: 0,
                       wrong: 0,
