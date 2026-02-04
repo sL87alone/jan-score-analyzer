@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { Upload, ListChecks, BarChart3 } from "lucide-react";
+import { Upload, CalendarDays, BarChart3, Share2 } from "lucide-react";
 
 const steps = [
   {
@@ -9,16 +9,16 @@ const steps = [
     description: "Paste your JEE Main response sheet URL or upload the HTML file directly.",
   },
   {
-    icon: ListChecks,
+    icon: CalendarDays,
     number: "02",
-    title: "Select answer key / shift",
-    description: "Choose the correct exam shift and answer key for accurate scoring.",
+    title: "Select exam date + shift",
+    description: "System auto-picks the correct answer key for your selected shift.",
   },
   {
     icon: BarChart3,
     number: "03",
-    title: "Get marks + analysis + share link",
-    description: "Receive instant results with detailed breakdown and a shareable link.",
+    title: "Get score + percentile + breakdown",
+    description: "Marks, accuracy, negatives, Section A/B breakdown, expected percentile, share link & PDF.",
   },
 ];
 
