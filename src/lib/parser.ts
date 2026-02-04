@@ -1,5 +1,8 @@
 import { ParsedResponse } from "./types";
-import { parseDigialmResponseSheet, isDigialmFormat, getDigialmDiagnostic } from "./digialmParser";
+import { parseDigialmResponseSheet, isDigialmFormat, getDigialmDiagnostic, getDigialmDebugInfo, ParserDebugInfo } from "./digialmParser";
+
+export type { ParserDebugInfo } from "./digialmParser";
+export { getDigialmDebugInfo } from "./digialmParser";
 
 /**
  * Parse JEE Main Response Sheet HTML to extract student responses
@@ -172,13 +175,26 @@ export function validateResponseSheet(html: string): { valid: boolean; message: 
  */
 export function getParsingDiagnostic(html: string): string {
   const diagnostic = getDigialmDiagnostic(html);
+  const debugInfo = getDigialmDebugInfo(html);
+  
+  let message = "";
   
   if (diagnostic.questionCount === 0) {
-    return `We fetched the page (${html.length} bytes) but couldn't detect Question ID blocks. ` +
-           `This link must be a Digialm response sheet (AssessmentQPHTMLMode1). ` +
-           `Try uploading the response HTML if the link content is different.`;
+    message = `We fetched the page (${html.length} bytes) but couldn't detect Question ID blocks.`;
+    
+    if (debugInfo.markers.hasQuestionIdVariants.length > 0) {
+      message += ` Found markers: ${debugInfo.markers.hasQuestionIdVariants.join(", ")}.`;
+    }
+    
+    if (debugInfo.scriptBlocks.hasJsonLikeData) {
+      message += ` Found ${debugInfo.scriptBlocks.count} script blocks with potential JSON data.`;
+    }
+    
+    message += ` The Digialm format may have changed. Try uploading the response HTML file instead.`;
+  } else {
+    message = `Found ${diagnostic.questionCount} questions but could not parse responses. `;
+    message += `Has Option IDs: ${diagnostic.hasOptionIds}, Has Chosen Options: ${diagnostic.hasChosenOptions}.`;
   }
   
-  return `Found ${diagnostic.questionCount} questions but could not parse responses. ` +
-         `Has Option IDs: ${diagnostic.hasOptionIds}, Has Chosen Options: ${diagnostic.hasChosenOptions}`;
+  return message;
 }

@@ -16,13 +16,14 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Upload, Link as LinkIcon, FileText, Loader2, AlertCircle, Zap, Calendar, Clock } from "lucide-react";
+import { Upload, Link as LinkIcon, FileText, Loader2, AlertCircle, Zap, Calendar, Clock, Bug, ChevronDown, ChevronUp, CheckCircle } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
-import { parseResponseSheetHTML, validateResponseSheet, getParsingDiagnostic } from "@/lib/parser";
+import { parseResponseSheetHTML, validateResponseSheet, getParsingDiagnostic, getDigialmDebugInfo, ParserDebugInfo } from "@/lib/parser";
 import { calculateScores } from "@/lib/scoring";
-import { Test, MarkingRules } from "@/lib/types";
+import { Test, MarkingRules, ParsedResponse } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
 import { EXAM_DATES, SHIFTS } from "@/lib/examDates";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 const Analyze = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -43,6 +44,19 @@ const Analyze = () => {
   const [dateError, setDateError] = useState("");
   const [shiftError, setShiftError] = useState("");
   const [showUploadFallback, setShowUploadFallback] = useState(false);
+  
+  // Debug and verification state
+  const [debugInfo, setDebugInfo] = useState<ParserDebugInfo | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
+  const [parsedPreview, setParsedPreview] = useState<{
+    count: number;
+    math: number;
+    physics: number;
+    chemistry: number;
+    numerical: number;
+  } | null>(null);
+  const [pendingHtml, setPendingHtml] = useState<string | null>(null);
+  const [pendingSourceType, setPendingSourceType] = useState<"url" | "html">("url");
 
   useEffect(() => {
     fetchAllTests();
@@ -134,14 +148,83 @@ const Analyze = () => {
     return valid;
   };
 
-  const processAnalysis = useCallback(async (htmlContent: string, sourceType: "url" | "html") => {
+  // Count responses by subject (heuristic based on question order)
+  const countBySubject = (responses: ParsedResponse[]): { math: number; physics: number; chemistry: number; numerical: number } => {
+    const total = responses.length;
+    // JEE Main typically has 25 questions per subject (20 MCQ + 5 Numerical for each)
+    // Questions are usually in order: Math (1-25), Physics (26-50), Chemistry (51-75)
+    let numerical = 0;
+    responses.forEach(r => {
+      if (r.claimed_numeric_value !== undefined) numerical++;
+    });
+    
+    // Rough distribution
+    const perSubject = Math.ceil(total / 3);
+    return {
+      math: Math.min(perSubject, total),
+      physics: Math.min(perSubject, Math.max(0, total - perSubject)),
+      chemistry: Math.max(0, total - 2 * perSubject),
+      numerical,
+    };
+  };
+
+  // Step 1: Parse and preview (don't save yet)
+  const parseAndPreview = async (htmlContent: string, sourceType: "url" | "html") => {
     // Validate the HTML
     const validation = validateResponseSheet(htmlContent);
     if (!validation.valid) {
+      const debug = getDigialmDebugInfo(htmlContent);
+      setDebugInfo(debug);
       throw new Error(validation.message);
     }
 
     // Parse responses from HTML
+    const parsedResponses = parseResponseSheetHTML(htmlContent);
+    
+    // Generate debug info
+    const debug = getDigialmDebugInfo(htmlContent);
+    debug.responseCount = parsedResponses.length;
+    debug.strategyUsed = parsedResponses.length > 0 ? "success" : "failed";
+    setDebugInfo(debug);
+    
+    if (parsedResponses.length === 0) {
+      const diagnostic = getParsingDiagnostic(htmlContent);
+      throw new Error(diagnostic);
+    }
+
+    // Show preview and store pending data
+    const counts = countBySubject(parsedResponses);
+    setParsedPreview({
+      count: parsedResponses.length,
+      ...counts,
+    });
+    setPendingHtml(htmlContent);
+    setPendingSourceType(sourceType);
+    
+    return parsedResponses.length;
+  };
+
+  // Step 2: Confirm and save
+  const confirmAndSave = async () => {
+    if (!pendingHtml) return;
+    
+    setLoading(true);
+    try {
+      const submissionId = await processAnalysis(pendingHtml, pendingSourceType);
+      toast({
+        title: "Analysis Complete!",
+        description: "Your score has been calculated successfully.",
+      });
+      navigate(`/result/${submissionId}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An error occurred");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const processAnalysis = useCallback(async (htmlContent: string, sourceType: "url" | "html") => {
+    // Parse responses from HTML (already validated in preview step)
     const parsedResponses = parseResponseSheetHTML(htmlContent);
     if (parsedResponses.length === 0) {
       const diagnostic = getParsingDiagnostic(htmlContent);
@@ -220,6 +303,8 @@ const Analyze = () => {
 
     setLoading(true);
     setError("");
+    setDebugInfo(null);
+    setParsedPreview(null);
 
     try {
       // Try to fetch via edge function
@@ -231,17 +316,17 @@ const Analyze = () => {
         // Show fallback message
         setShowUploadFallback(true);
         setInputMethod("html");
-        setError("This link cannot be accessed automatically (login/session required). Please upload the Response HTML file.");
+        setError(data?.error || "This link cannot be accessed automatically (login/session required). Please upload the Response HTML file.");
         setLoading(false);
         return;
       }
 
-      const submissionId = await processAnalysis(data.html, "url");
+      // Parse and show preview
+      await parseAndPreview(data.html, "url");
       toast({
-        title: "Analysis Complete!",
-        description: "Your score has been calculated successfully.",
+        title: "Responses Parsed!",
+        description: "Review the summary below, then click Confirm to generate your report.",
       });
-      navigate(`/result/${submissionId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
@@ -261,16 +346,18 @@ const Analyze = () => {
 
     setLoading(true);
     setError("");
+    setDebugInfo(null);
+    setParsedPreview(null);
 
     try {
       const htmlContent = await file.text();
-      const submissionId = await processAnalysis(htmlContent, "html");
       
+      // Parse and show preview
+      await parseAndPreview(htmlContent, "html");
       toast({
-        title: "Analysis Complete!",
-        description: "Your score has been calculated successfully.",
+        title: "Responses Parsed!",
+        description: "Review the summary below, then click Confirm to generate your report.",
       });
-      navigate(`/result/${submissionId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
@@ -473,12 +560,103 @@ const Analyze = () => {
                   </TabsContent>
                 </Tabs>
 
+                {/* Parsed Preview - Show after successful parsing */}
+                {parsedPreview && (
+                  <Alert className="border-primary/50 bg-primary/10">
+                    <CheckCircle className="h-4 w-4 text-primary" />
+                    <AlertDescription className="text-foreground">
+                      <div className="space-y-2">
+                        <p className="font-semibold">✓ Parsed {parsedPreview.count} responses successfully!</p>
+                        <div className="text-sm grid grid-cols-2 gap-2">
+                          <span>Mathematics: ~{parsedPreview.math} questions</span>
+                          <span>Physics: ~{parsedPreview.physics} questions</span>
+                          <span>Chemistry: ~{parsedPreview.chemistry} questions</span>
+                          <span>Numerical (Section B): {parsedPreview.numerical} questions</span>
+                        </div>
+                        <Button 
+                          onClick={confirmAndSave}
+                          disabled={loading}
+                          className="w-full mt-3"
+                          size="lg"
+                        >
+                          {loading ? (
+                            <>
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              Generating Report...
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle className="w-4 h-4 mr-2" />
+                              Confirm & Generate Report
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    </AlertDescription>
+                  </Alert>
+                )}
+
                 {/* Error Message */}
                 {error && (
                   <Alert variant="destructive">
                     <AlertCircle className="h-4 w-4" />
                     <AlertDescription>{error}</AlertDescription>
                   </Alert>
+                )}
+
+                {/* Debug Info - Show when parsing fails */}
+                {debugInfo && !parsedPreview && (
+                  <Collapsible open={showDebug} onOpenChange={setShowDebug}>
+                    <CollapsibleTrigger asChild>
+                      <Button variant="outline" className="w-full justify-between">
+                        <span className="flex items-center gap-2">
+                          <Bug className="w-4 h-4" />
+                          View Debug Info
+                        </span>
+                        {showDebug ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                      </Button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="mt-2">
+                      <div className="p-4 bg-muted rounded-lg text-xs font-mono space-y-3 max-h-96 overflow-auto">
+                        <div>
+                          <p className="font-bold text-sm mb-1">Markers Found:</p>
+                          <ul className="list-disc list-inside space-y-1">
+                            <li>Question ID variants: {debugInfo.markers.hasQuestionIdVariants.length > 0 ? debugInfo.markers.hasQuestionIdVariants.join(", ") : "None"}</li>
+                            <li>Has Option IDs: {debugInfo.markers.hasOptionIds ? "Yes" : "No"}</li>
+                            <li>Has Chosen Option: {debugInfo.markers.hasChosenOption ? "Yes" : "No"}</li>
+                            <li>Has Given Answer: {debugInfo.markers.hasGivenAnswer ? "Yes" : "No"}</li>
+                            <li>Has Question Palette: {debugInfo.markers.hasQuestionPalette ? "Yes" : "No"}</li>
+                          </ul>
+                        </div>
+                        <div>
+                          <p className="font-bold text-sm mb-1">Script Blocks:</p>
+                          <ul className="list-disc list-inside">
+                            <li>Count: {debugInfo.scriptBlocks.count}</li>
+                            <li>Top lengths: {debugInfo.scriptBlocks.topLengths.join(", ") || "None"}</li>
+                            <li>Has JSON-like data: {debugInfo.scriptBlocks.hasJsonLikeData ? "Yes" : "No"}</li>
+                          </ul>
+                        </div>
+                        <div>
+                          <p className="font-bold text-sm mb-1">HTML Stats:</p>
+                          <p>Total length: {debugInfo.htmlLength} bytes</p>
+                        </div>
+                        <div>
+                          <p className="font-bold text-sm mb-1">Clean Text Preview (first 1500 chars):</p>
+                          <pre className="whitespace-pre-wrap break-words bg-background p-2 rounded border max-h-40 overflow-auto">
+                            {debugInfo.cleanTextPreview.substring(0, 1500)}
+                          </pre>
+                        </div>
+                        {debugInfo.largestScriptPreview && (
+                          <div>
+                            <p className="font-bold text-sm mb-1">Largest Script Preview (first 1000 chars):</p>
+                            <pre className="whitespace-pre-wrap break-words bg-background p-2 rounded border max-h-40 overflow-auto">
+                              {debugInfo.largestScriptPreview.substring(0, 1000)}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    </CollapsibleContent>
+                  </Collapsible>
                 )}
 
                 {/* Fallback Message */}
