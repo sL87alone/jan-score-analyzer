@@ -21,6 +21,7 @@ interface RequestBody {
   exam_date: string;
   shift: string;
   keys: AnswerKeyRow[];
+  mode?: "upsert" | "replace"; // default: upsert
 }
 
 Deno.serve(async (req) => {
@@ -67,7 +68,7 @@ Deno.serve(async (req) => {
 
     // Parse request body
     const body: RequestBody = await req.json();
-    const { exam_date, shift, keys } = body;
+    const { exam_date, shift, keys, mode = "upsert" } = body;
 
     // Validate required fields
     if (!exam_date || !shift || !keys || !Array.isArray(keys) || keys.length === 0) {
@@ -79,7 +80,15 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`Upload request: ${exam_date} ${shift}, ${keys.length} keys`);
+    // Validate mode
+    if (mode !== "upsert" && mode !== "replace") {
+      return new Response(
+        JSON.stringify({ error: "Invalid mode. Must be 'upsert' or 'replace'" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    console.log(`Upload request: ${exam_date} ${shift}, ${keys.length} keys, mode: ${mode}`);
 
     // Create Supabase client with service role key (bypasses RLS)
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
@@ -118,7 +127,31 @@ Deno.serve(async (req) => {
       );
     }
 
-    // 2. Transform keys for upsert
+    let deletedCount = 0;
+    let insertedCount = 0;
+    let updatedCount = 0;
+
+    // 2. Handle Replace mode: delete existing keys first
+    if (mode === "replace") {
+      const { data: deletedData, error: deleteError } = await supabase
+        .from("answer_keys")
+        .delete()
+        .eq("test_id", testId)
+        .select("id");
+
+      if (deleteError) {
+        console.error("Error deleting existing keys:", deleteError);
+        return new Response(
+          JSON.stringify({ error: `Failed to delete existing keys: ${deleteError.message}` }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      deletedCount = deletedData?.length || 0;
+      console.log(`Deleted ${deletedCount} existing keys for replace mode`);
+    }
+
+    // 3. Transform keys for insert/upsert
     const keysToUpsert = keys.map((key) => ({
       test_id: testId,
       question_id: key.question_id,
@@ -131,23 +164,41 @@ Deno.serve(async (req) => {
       is_bonus: key.is_bonus || false,
     }));
 
-    // 3. Upsert answer keys (conflict on test_id, question_id)
-    const { error: upsertError, count } = await supabase
-      .from("answer_keys")
-      .upsert(keysToUpsert, { 
-        onConflict: "test_id,question_id",
-        count: "exact"
-      });
+    // 4. Insert or upsert answer keys
+    if (mode === "replace") {
+      // Simple insert for replace mode (we already deleted)
+      const { error: insertError } = await supabase
+        .from("answer_keys")
+        .insert(keysToUpsert);
 
-    if (upsertError) {
-      console.error("Error upserting keys:", upsertError);
-      return new Response(
-        JSON.stringify({ error: `Failed to upsert answer keys: ${upsertError.message}` }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      if (insertError) {
+        console.error("Error inserting keys:", insertError);
+        return new Response(
+          JSON.stringify({ error: `Failed to insert answer keys: ${insertError.message}` }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      insertedCount = keys.length;
+    } else {
+      // Upsert for merge mode (conflict on test_id, question_id)
+      const { error: upsertError } = await supabase
+        .from("answer_keys")
+        .upsert(keysToUpsert, { 
+          onConflict: "test_id,question_id",
+        });
+
+      if (upsertError) {
+        console.error("Error upserting keys:", upsertError);
+        return new Response(
+          JSON.stringify({ error: `Failed to upsert answer keys: ${upsertError.message}` }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      // For upsert, we can't easily distinguish updated vs inserted
+      updatedCount = keys.length;
     }
 
-    // 4. Update test's updated_at timestamp
+    // 5. Update test's updated_at timestamp
     const { error: updateError } = await supabase
       .from("tests")
       .update({ updated_at: new Date().toISOString() })
@@ -158,7 +209,7 @@ Deno.serve(async (req) => {
       // Non-fatal, continue
     }
 
-    // 5. Get final count for verification (sanity check)
+    // 6. Get final count for verification
     const { data: verifyData, error: verifyError } = await supabase
       .from("answer_keys")
       .select("subject")
@@ -173,12 +224,16 @@ Deno.serve(async (req) => {
     const physicsCount = verifyData?.filter(k => k.subject === "Physics").length || 0;
     const chemistryCount = verifyData?.filter(k => k.subject === "Chemistry").length || 0;
 
-    console.log(`Upload complete: ${totalKeys} keys (M:${mathCount} P:${physicsCount} C:${chemistryCount})`);
+    console.log(`Upload complete (${mode}): ${totalKeys} keys (M:${mathCount} P:${physicsCount} C:${chemistryCount})`);
 
     return new Response(
       JSON.stringify({
         success: true,
         testId,
+        mode,
+        deletedCount,
+        insertedCount,
+        updatedCount,
         upsertedCount: keys.length,
         totalKeys,
         breakdown: {
