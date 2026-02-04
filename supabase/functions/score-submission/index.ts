@@ -96,13 +96,17 @@ serve(async (req) => {
       userId = user?.id || null;
     }
 
-    // Create submission
+    // Generate a secure share token
+    const shareToken = crypto.randomUUID().replace(/-/g, '').substring(0, 16);
+
+    // Create submission with share token
     const { data: submission, error: subError } = await supabase
       .from("submissions")
       .insert({
         test_id: testId,
         source_type: sourceType || "url",
         share_enabled: true,
+        share_token: shareToken,
         user_id: userId,
       })
       .select()
@@ -116,7 +120,7 @@ serve(async (req) => {
       );
     }
 
-    console.log(`Created submission ${submission.id}`);
+    console.log(`Created submission ${submission.id} with share token`);
 
     // Calculate scores
     const markingRules = test.marking_rules_json as MarkingRules;

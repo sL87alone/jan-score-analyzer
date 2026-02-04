@@ -9,6 +9,7 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import Landing from "./pages/Landing";
 import Analyze from "./pages/Analyze";
 import Result from "./pages/Result";
+import SharedResult from "./pages/SharedResult";
 import AdminLogin from "./pages/AdminLogin";
 import AdminTests from "./pages/AdminTests";
 import AdminUploadKey from "./pages/AdminUploadKey";
@@ -29,6 +30,7 @@ const App = () => (
               <Route path="/" element={<Landing />} />
               <Route path="/analyze" element={<Analyze />} />
               <Route path="/result/:id" element={<Result />} />
+              <Route path="/r/:token" element={<SharedResult />} />
               <Route path="/admin" element={<AdminLogin />} />
               <Route path="/admin/tests" element={<AdminTests />} />
               <Route path="/admin/upload-key" element={<AdminUploadKey />} />
