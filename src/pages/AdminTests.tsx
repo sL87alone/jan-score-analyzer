@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
@@ -31,7 +31,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Plus, Pencil, Trash2, LogOut, Loader2, Upload, Calendar, Database, FileText, Key } from "lucide-react";
+import { Plus, Pencil, Trash2, LogOut, Loader2, Upload, Calendar, Database, FileText, Key, RefreshCw, Bug } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Test, MarkingRules } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
@@ -64,10 +64,13 @@ const AdminTests = () => {
 
   const [tests, setTests] = useState<TestWithKeyCount[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [creating, setCreating] = useState(false);
   const [seeding, setSeeding] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingTest, setEditingTest] = useState<Test | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
+  const [debugInfo, setDebugInfo] = useState<{ testId: string; date: string; shift: string; keyCount: number }[]>([]);
 
   // Form state
   const [name, setName] = useState("");
@@ -76,55 +79,112 @@ const AdminTests = () => {
   const [markingRules, setMarkingRules] = useState<MarkingRules>(defaultMarkingRules);
   const [isActive, setIsActive] = useState(true);
 
-  useEffect(() => {
-    if (!authLoading && !isAuthenticated) {
-      navigate("/admin");
-    }
-  }, [authLoading, isAuthenticated, navigate]);
+  // Silent auto-seed via edge function
+  const autoSeedTests = async (token: string) => {
+    try {
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-seed-tests`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+          },
+        }
+      );
 
-  useEffect(() => {
-    if (isAuthenticated) {
-      initializeTests();
-    }
-  }, [isAuthenticated]);
-
-  // Check for refresh signal from upload page - with dependency on fetchTestsWithKeyCounts
-  useEffect(() => {
-    const handleStorageChange = () => {
-      const refreshNeeded = localStorage.getItem("tests_refresh_needed");
-      if (refreshNeeded) {
-        console.log("Refresh signal detected, refetching tests...");
-        localStorage.removeItem("tests_refresh_needed");
-        fetchTestsWithKeyCounts();
+      if (!response.ok) {
+        const result = await response.json();
+        console.error("Auto-seed failed:", result.error);
+      } else {
+        const result = await response.json();
+        console.log("Auto-seeded:", result);
       }
-    };
+    } catch (err) {
+      console.error("Auto-seed error:", err);
+    }
+  };
 
-    // Check on mount
-    handleStorageChange();
+  const fetchTestsWithKeyCounts = useCallback(async (showRefreshToast = false) => {
+    if (showRefreshToast) {
+      setRefreshing(true);
+    }
+    
+    console.log("Fetching tests with key counts...");
+    
+    // Fetch all tests
+    const { data: testsData, error: testsError } = await supabase
+      .from("tests")
+      .select("*")
+      .order("exam_date", { ascending: true })
+      .order("shift", { ascending: true });
 
-    // Listen for storage events (from other tabs)
-    window.addEventListener("storage", handleStorageChange);
+    if (testsError) {
+      console.error("Error fetching tests:", testsError);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+
+    if (!testsData || testsData.length === 0) {
+      setTests([]);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+
+    // Fetch key counts for each test
+    const testIds = testsData.map(t => t.id);
+    const { data: keyCounts, error: keyError } = await supabase
+      .from("answer_keys")
+      .select("test_id")
+      .in("test_id", testIds);
+
+    if (keyError) {
+      console.error("Error fetching key counts:", keyError);
+    }
+
+    console.log("Fetched key counts:", keyCounts?.length || 0, "total keys across tests");
+
+    // Count keys per test
+    const countMap = new Map<string, number>();
+    keyCounts?.forEach(k => {
+      countMap.set(k.test_id, (countMap.get(k.test_id) || 0) + 1);
+    });
+
+    // Merge counts with tests
+    const testsWithCounts: TestWithKeyCount[] = testsData.map(test => ({
+      ...(test as unknown as Test),
+      key_count: countMap.get(test.id) || 0,
+    }));
+
+    // Update debug info
+    const debugData = testsWithCounts.map(t => ({
+      testId: t.id,
+      date: t.exam_date || "unknown",
+      shift: t.shift,
+      keyCount: t.key_count || 0,
+    }));
+    setDebugInfo(debugData);
+
+    console.log("Tests with key counts:", debugData);
+
+    setTests(testsWithCounts);
+    setLoading(false);
+    setRefreshing(false);
     
-    // Also check on focus (for same-tab navigation) 
-    window.addEventListener("focus", handleStorageChange);
-    
-    // Also listen for visibilitychange for more reliable detection
-    const handleVisibility = () => {
-      if (document.visibilityState === "visible") {
-        handleStorageChange();
-      }
-    };
-    document.addEventListener("visibilitychange", handleVisibility);
-    
-    return () => {
-      window.removeEventListener("storage", handleStorageChange);
-      window.removeEventListener("focus", handleStorageChange);
-      document.removeEventListener("visibilitychange", handleVisibility);
-    };
-  }, []);
+    if (showRefreshToast) {
+      const totalKeys = testsWithCounts.reduce((sum, t) => sum + (t.key_count || 0), 0);
+      toast({
+        title: "Data refreshed",
+        description: `Found ${testsWithCounts.length} tests with ${totalKeys} total answer keys`,
+      });
+    }
+  }, [toast]);
 
   // Initialize tests - auto-seed if empty, then fetch
-  const initializeTests = async () => {
+  const initializeTests = useCallback(async () => {
     setLoading(true);
     
     // First check if any tests exist
@@ -156,81 +216,54 @@ const AdminTests = () => {
 
     // Now fetch all tests with key counts
     await fetchTestsWithKeyCounts();
-  };
+  }, [fetchTestsWithKeyCounts]);
 
-  // Silent auto-seed via edge function
-  const autoSeedTests = async (token: string) => {
-    try {
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-seed-tests`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-          },
-        }
-      );
+  useEffect(() => {
+    if (!authLoading && !isAuthenticated) {
+      navigate("/admin");
+    }
+  }, [authLoading, isAuthenticated, navigate]);
 
-      if (!response.ok) {
-        const result = await response.json();
-        console.error("Auto-seed failed:", result.error);
-      } else {
-        const result = await response.json();
-        console.log("Auto-seeded:", result);
+  useEffect(() => {
+    if (isAuthenticated) {
+      initializeTests();
+    }
+  }, [isAuthenticated, initializeTests]);
+
+  // Check for refresh signal from upload page
+  useEffect(() => {
+    const handleStorageChange = () => {
+      const refreshNeeded = localStorage.getItem("tests_refresh_needed");
+      if (refreshNeeded) {
+        console.log("Refresh signal detected, refetching tests...");
+        localStorage.removeItem("tests_refresh_needed");
+        fetchTestsWithKeyCounts(false);
       }
-    } catch (err) {
-      console.error("Auto-seed error:", err);
-    }
-  };
+    };
 
-  const fetchTestsWithKeyCounts = async () => {
-    // Fetch all tests
-    const { data: testsData, error: testsError } = await supabase
-      .from("tests")
-      .select("*")
-      .order("exam_date", { ascending: true })
-      .order("shift", { ascending: true });
+    // Check on mount
+    handleStorageChange();
 
-    if (testsError) {
-      console.error("Error fetching tests:", testsError);
-      setLoading(false);
-      return;
-    }
-
-    if (!testsData || testsData.length === 0) {
-      setTests([]);
-      setLoading(false);
-      return;
-    }
-
-    // Fetch key counts for each test
-    const testIds = testsData.map(t => t.id);
-    const { data: keyCounts, error: keyError } = await supabase
-      .from("answer_keys")
-      .select("test_id")
-      .in("test_id", testIds);
-
-    if (keyError) {
-      console.error("Error fetching key counts:", keyError);
-    }
-
-    // Count keys per test
-    const countMap = new Map<string, number>();
-    keyCounts?.forEach(k => {
-      countMap.set(k.test_id, (countMap.get(k.test_id) || 0) + 1);
-    });
-
-    // Merge counts with tests
-    const testsWithCounts: TestWithKeyCount[] = testsData.map(test => ({
-      ...(test as unknown as Test),
-      key_count: countMap.get(test.id) || 0,
-    }));
-
-    setTests(testsWithCounts);
-    setLoading(false);
-  };
+    // Listen for storage events (from other tabs)
+    window.addEventListener("storage", handleStorageChange);
+    
+    // Also check on focus (for same-tab navigation) 
+    window.addEventListener("focus", handleStorageChange);
+    
+    // Also listen for visibilitychange for more reliable detection
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        handleStorageChange();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
+      window.removeEventListener("focus", handleStorageChange);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [fetchTestsWithKeyCounts]);
 
   const handleSeedTests = async () => {
     const token = localStorage.getItem("admin_session");
@@ -503,13 +536,21 @@ const AdminTests = () => {
             </div>
             <div className="flex items-center gap-2">
               <Button 
+                variant="outline" 
+                size="sm"
+                onClick={() => fetchTestsWithKeyCounts(true)}
+                disabled={loading || refreshing}
+              >
+                {refreshing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                <span className="ml-2">Refresh</span>
+              </Button>
+              <Button 
                 variant="ghost" 
                 size="sm"
-                onClick={() => fetchTestsWithKeyCounts()}
-                disabled={loading}
+                onClick={() => setShowDebug(!showDebug)}
               >
-                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Database className="w-4 h-4" />}
-                <span className="ml-2">Refresh</span>
+                <Bug className="w-4 h-4" />
+                <span className="ml-2">Debug</span>
               </Button>
               <Button 
                 variant="outline" 
@@ -641,6 +682,30 @@ const AdminTests = () => {
               </Dialog>
             </div>
           </div>
+
+          {/* Debug Panel */}
+          {showDebug && (
+            <Card className="mb-6 border-dashed border-muted-foreground/50">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <Bug className="w-4 h-4" />
+                  Debug Info: Key Counts from Database
+                </CardTitle>
+                <CardDescription>
+                  Raw data showing test_id → key_count mapping
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="bg-muted rounded-md p-3 font-mono text-xs overflow-auto max-h-40">
+                  {debugInfo.length === 0 ? (
+                    <p className="text-muted-foreground">No data loaded yet. Click Refresh.</p>
+                  ) : (
+                    <pre>{JSON.stringify(debugInfo, null, 2)}</pre>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Tests Table */}
           <Card>
