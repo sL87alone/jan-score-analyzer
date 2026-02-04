@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Navbar } from "@/components/Navbar";
@@ -204,13 +204,46 @@ const Analyze = () => {
     return parsedResponses.length;
   };
 
-  // Step 2: Confirm and save
+  // Step 2: Confirm and save - with explicit validation and debug logging
   const confirmAndSave = async () => {
-    if (!pendingHtml) return;
+    // Debug log current state
+    console.log("confirmAndSave called with state:", {
+      selectedDate,
+      selectedShift,
+      selectedTestId,
+      hasPendingHtml: !!pendingHtml,
+      pendingSourceType,
+    });
+
+    if (!pendingHtml) {
+      setError("No parsed data found. Please parse the response sheet first.");
+      return;
+    }
+    
+    // Validate selections explicitly using current state
+    if (!selectedDate || !selectedShift) {
+      setError("Please select a valid exam date and shift.");
+      console.error("Validation failed: date or shift missing", { selectedDate, selectedShift });
+      return;
+    }
+
+    if (!selectedTestId) {
+      setError("Answer key not available for this exam date/shift. Please contact admin.");
+      console.error("Validation failed: no test ID", { selectedDate, selectedShift, selectedTestId });
+      return;
+    }
     
     setLoading(true);
+    setError("");
+    
     try {
-      const submissionId = await processAnalysis(pendingHtml, pendingSourceType);
+      // Pass current values directly to avoid stale closures
+      const submissionId = await processAnalysisWithParams(
+        pendingHtml, 
+        pendingSourceType,
+        selectedTestId,
+        tests
+      );
       toast({
         title: "Analysis Complete!",
         description: "Your score has been calculated successfully.",
@@ -223,7 +256,13 @@ const Analyze = () => {
     }
   };
 
-  const processAnalysis = useCallback(async (htmlContent: string, sourceType: "url" | "html") => {
+  // Process analysis with explicit parameters to avoid stale closures
+  const processAnalysisWithParams = async (
+    htmlContent: string, 
+    sourceType: "url" | "html",
+    testId: string,
+    allTests: Test[]
+  ) => {
     // Parse responses from HTML (already validated in preview step)
     const parsedResponses = parseResponseSheetHTML(htmlContent);
     if (parsedResponses.length === 0) {
@@ -231,15 +270,15 @@ const Analyze = () => {
       throw new Error(diagnostic);
     }
 
-    // Get the selected test
-    const selectedTest = tests.find((t) => t.id === selectedTestId);
+    // Get the selected test using passed parameter
+    const selectedTest = allTests.find((t) => t.id === testId);
     if (!selectedTest) {
       throw new Error("Please select a valid exam date and shift.");
     }
 
     // Get answer keys for the test
     const { data: answerKeys, error: akError } = await supabase
-      .rpc("get_answer_keys_for_test", { p_test_id: selectedTestId });
+      .rpc("get_answer_keys_for_test", { p_test_id: testId });
 
     if (akError || !answerKeys || answerKeys.length === 0) {
       throw new Error("No answer keys found for this test. Please contact admin.");
@@ -249,7 +288,7 @@ const Analyze = () => {
     const { data: submission, error: subError } = await supabase
       .from("submissions")
       .insert({
-        test_id: selectedTestId,
+        test_id: testId,
         source_type: sourceType,
         share_enabled: true,
       })
@@ -289,7 +328,7 @@ const Analyze = () => {
     }
 
     return submission.id;
-  }, [selectedTestId, tests]);
+  };
 
   const handleUrlSubmit = async () => {
     if (!validateSelection()) {
@@ -366,6 +405,7 @@ const Analyze = () => {
   };
 
   const isSubmitDisabled = !selectedDate || !selectedShift || loading;
+  const isConfirmDisabled = loading || !selectedDate || !selectedShift || !selectedTestId || !parsedPreview;
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -573,9 +613,20 @@ const Analyze = () => {
                           <span>Chemistry: ~{parsedPreview.chemistry} questions</span>
                           <span>Numerical (Section B): {parsedPreview.numerical} questions</span>
                         </div>
+                        
+                        {/* Show current selection status */}
+                        <div className="text-xs text-muted-foreground mt-2 p-2 bg-background/50 rounded">
+                          <p>Selected: {selectedDate ? EXAM_DATES.find(d => d.value === selectedDate)?.label : "No date"} | {selectedShift || "No shift"}</p>
+                          {selectedTestId ? (
+                            <p className="text-primary">✓ Answer key found</p>
+                          ) : (
+                            <p className="text-destructive">✗ No answer key available for this date/shift</p>
+                          )}
+                        </div>
+                        
                         <Button 
                           onClick={confirmAndSave}
-                          disabled={loading}
+                          disabled={isConfirmDisabled}
                           className="w-full mt-3"
                           size="lg"
                         >
@@ -591,6 +642,16 @@ const Analyze = () => {
                             </>
                           )}
                         </Button>
+                        
+                        {isConfirmDisabled && !loading && (
+                          <p className="text-xs text-destructive text-center">
+                            {!selectedDate || !selectedShift 
+                              ? "Please select exam date and shift above." 
+                              : !selectedTestId 
+                                ? "Answer key not available for this exam date/shift." 
+                                : ""}
+                          </p>
+                        )}
                       </div>
                     </AlertDescription>
                   </Alert>
