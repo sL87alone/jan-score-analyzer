@@ -56,9 +56,13 @@ const Analyze = () => {
     rawCount: number;
     uniqueCount: number;
     matchedCount: number;
-    subjectBreakdown: { subject: string; matched: number; total: number }[];
-    numericalAttempted: number;
-    numericalTotal: number;
+    totalAttempted: number;
+    subjectBreakdown: { subject: string; matched: number; total: number; attempted: number }[];
+    numericalStats: {
+      total: number;
+      attempted: number;
+      examples: { questionId: string; value: number | string | null; isAttempted: boolean }[];
+    };
   } | null>(null);
   const [pendingHtml, setPendingHtml] = useState<string | null>(null);
   const [pendingSourceType, setPendingSourceType] = useState<"url" | "html">("url");
@@ -274,20 +278,13 @@ const Analyze = () => {
         stats.rawParsedCount = rawCount;
         setMatchingStats(stats);
         
-        // Count numerical questions (attempted and total)
-        const numericalKeys = answerKeys.filter((k: { question_type: string }) => k.question_type === "numerical");
-        const numericalAttempted = parsedResponses.filter(r => 
-          r.claimed_numeric_value !== undefined && 
-          numericalKeys.some((k: { question_id: string }) => String(k.question_id) === String(r.question_id))
-        ).length;
-        
         setParsedPreview({
           rawCount,
           uniqueCount: parsedResponses.length,
           matchedCount: stats.matchedWithKeyCount,
+          totalAttempted: stats.totalAttempted,
           subjectBreakdown: stats.subjectBreakdown,
-          numericalAttempted,
-          numericalTotal: numericalKeys.length,
+          numericalStats: stats.numericalStats,
         });
       } else {
         // No answer keys available
@@ -295,9 +292,9 @@ const Analyze = () => {
           rawCount,
           uniqueCount: parsedResponses.length,
           matchedCount: 0,
+          totalAttempted: 0,
           subjectBreakdown: [],
-          numericalAttempted: 0,
-          numericalTotal: 0,
+          numericalStats: { total: 0, attempted: 0, examples: [] },
         });
         setMatchingStats(null);
       }
@@ -307,9 +304,9 @@ const Analyze = () => {
         rawCount,
         uniqueCount: parsedResponses.length,
         matchedCount: 0,
+        totalAttempted: 0,
         subjectBreakdown: [],
-        numericalAttempted: 0,
-        numericalTotal: 0,
+        numericalStats: { total: 0, attempted: 0, examples: [] },
       });
       setMatchingStats(null);
     }
@@ -751,9 +748,14 @@ const Analyze = () => {
                             ✓ Parsed {parsedPreview.uniqueCount} responses ({parsedPreview.rawCount} raw → {parsedPreview.uniqueCount} unique)
                           </p>
                           {parsedPreview.matchedCount > 0 ? (
-                            <p className="text-sm text-primary">
-                              Matched with answer key: {parsedPreview.matchedCount} / {parsedPreview.uniqueCount}
-                            </p>
+                            <>
+                              <p className="text-sm text-primary">
+                                Matched with answer key: {parsedPreview.matchedCount} / {parsedPreview.uniqueCount}
+                              </p>
+                              <p className="text-sm font-medium mt-1">
+                                Total Attempted: {parsedPreview.totalAttempted} / {parsedPreview.matchedCount}
+                              </p>
+                            </>
                           ) : parsedPreview.uniqueCount > 0 && selectedTestId ? (
                             <p className="text-sm text-destructive flex items-center gap-1">
                               <AlertTriangle className="w-3 h-3" />
@@ -762,17 +764,22 @@ const Analyze = () => {
                           ) : null}
                         </div>
                         
-                        {/* Subject breakdown from answer key matching */}
+                        {/* Subject breakdown with attempted counts */}
                         {parsedPreview.subjectBreakdown.length > 0 && (
-                          <div className="text-sm grid grid-cols-2 gap-2 p-2 bg-background/50 rounded">
-                            {parsedPreview.subjectBreakdown.map(s => (
-                              <span key={s.subject}>
-                                {s.subject}: {s.matched}/{s.total}
+                          <div className="text-sm p-2 bg-background/50 rounded space-y-1">
+                            <div className="grid grid-cols-3 gap-2">
+                              {parsedPreview.subjectBreakdown.map(s => (
+                                <div key={s.subject} className="text-center">
+                                  <p className="font-medium">{s.subject.slice(0, 4)}</p>
+                                  <p className="text-muted-foreground">{s.attempted}/{s.matched} att</p>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="border-t pt-1 mt-1">
+                              <span className="font-medium">
+                                Numerical: {parsedPreview.numericalStats.attempted}/{parsedPreview.numericalStats.total} attempted
                               </span>
-                            ))}
-                            <span>
-                              Numerical: {parsedPreview.numericalAttempted}/{parsedPreview.numericalTotal} attempted
-                            </span>
+                            </div>
                           </div>
                         )}
                         
@@ -852,13 +859,13 @@ const Analyze = () => {
                       <Button variant="outline" className="w-full justify-between">
                         <span className="flex items-center gap-2">
                           <Bug className="w-4 h-4" />
-                          {parsedPreview ? "Debug: Key Matching Details" : "View Debug Info"}
+                          {parsedPreview ? "Debug: Key Matching & Numerical Details" : "View Debug Info"}
                         </span>
                         {showDebug ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                       </Button>
                     </CollapsibleTrigger>
                     <CollapsibleContent className="mt-2">
-                      <div className="p-4 bg-muted rounded-lg text-xs font-mono space-y-3 max-h-96 overflow-auto">
+                      <div className="p-4 bg-muted rounded-lg text-xs font-mono space-y-3 max-h-[500px] overflow-auto">
                         {/* Key Matching Stats (when available) */}
                         {matchingStats && (
                           <div className="border-b border-border pb-3">
@@ -867,8 +874,54 @@ const Analyze = () => {
                               <li>Raw Parsed Count: {matchingStats.rawParsedCount}</li>
                               <li>Unique Question Count: {matchingStats.uniqueQuestionCount}</li>
                               <li>Matched with Key Count: {matchingStats.matchedWithKeyCount}</li>
+                              <li className="font-medium">Total Attempted: {matchingStats.totalAttempted}</li>
                               <li>Match Rate: {Math.round((matchingStats.matchedWithKeyCount / matchingStats.uniqueQuestionCount) * 100)}%</li>
                             </ul>
+                            
+                            {/* Subject-wise attempted */}
+                            <div className="mt-3">
+                              <p className="font-medium text-primary">Subject-wise Attempted:</p>
+                              <ul className="list-disc list-inside">
+                                {matchingStats.subjectBreakdown.map(s => (
+                                  <li key={s.subject}>
+                                    {s.subject}: {s.attempted} attempted / {s.matched} matched / {s.total} total
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                            
+                            {/* Numerical Stats */}
+                            <div className="mt-3 p-2 bg-background rounded border">
+                              <p className="font-medium text-primary mb-1">
+                                Numerical Questions: {matchingStats.numericalStats.attempted}/{matchingStats.numericalStats.total} attempted
+                              </p>
+                              {matchingStats.numericalStats.examples.length > 0 && (
+                                <div className="mt-2">
+                                  <p className="text-muted-foreground mb-1">Sample extracted values:</p>
+                                  <table className="w-full text-xs">
+                                    <thead>
+                                      <tr className="border-b">
+                                        <th className="text-left p-1">Q.ID</th>
+                                        <th className="text-left p-1">Value</th>
+                                        <th className="text-left p-1">Status</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {matchingStats.numericalStats.examples.map((ex, i) => (
+                                        <tr key={i} className="border-b border-border/50">
+                                          <td className="p-1 font-mono">{ex.questionId.slice(-6)}</td>
+                                          <td className="p-1">{ex.value !== null ? String(ex.value) : "--"}</td>
+                                          <td className={`p-1 ${ex.isAttempted ? "text-primary" : "text-muted-foreground"}`}>
+                                            {ex.isAttempted ? "✓" : "—"}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                            </div>
+                            
                             {matchingStats.mismatchedIds.length > 0 && (
                               <div className="mt-2">
                                 <p className="text-destructive font-medium">First {Math.min(10, matchingStats.mismatchedIds.length)} mismatched IDs:</p>
@@ -892,6 +945,34 @@ const Analyze = () => {
                                 <li>Has Question Palette: {debugInfo.markers.hasQuestionPalette ? "Yes" : "No"}</li>
                               </ul>
                             </div>
+                            
+                            {/* Raw numerical examples from HTML */}
+                            {debugInfo.numericalExamples && debugInfo.numericalExamples.length > 0 && (
+                              <div className="p-2 bg-background rounded border">
+                                <p className="font-bold text-sm mb-1">Raw Numerical Extraction (from HTML):</p>
+                                <table className="w-full text-xs">
+                                  <thead>
+                                    <tr className="border-b">
+                                      <th className="text-left p-1">Q.ID</th>
+                                      <th className="text-left p-1">Raw Snippet</th>
+                                      <th className="text-left p-1">Extracted</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {debugInfo.numericalExamples.slice(0, 10).map((ex, i) => (
+                                      <tr key={i} className="border-b border-border/50">
+                                        <td className="p-1 font-mono">{ex.questionId.slice(-6)}</td>
+                                        <td className="p-1 text-muted-foreground">{ex.rawSnippet}</td>
+                                        <td className={`p-1 ${ex.isAttempted ? "text-primary" : "text-muted-foreground"}`}>
+                                          {ex.extractedValue !== null ? String(ex.extractedValue) : "--"}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                            
                             <div>
                               <p className="font-bold text-sm mb-1">Script Blocks:</p>
                               <ul className="list-disc list-inside">

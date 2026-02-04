@@ -114,10 +114,15 @@ export function calculateScores(
         subjectScores[subject].correct++;
       } else {
         status = "wrong";
-        marksAwarded = rules.wrong;
+        // Numerical questions have no negative marking
+        if (questionType === "numerical") {
+          marksAwarded = 0;
+        } else {
+          marksAwarded = rules.wrong;
+          negativeMarks += Math.abs(rules.wrong);
+        }
         totalWrong++;
         subjectScores[subject].wrong++;
-        negativeMarks += Math.abs(rules.wrong);
       }
     }
 
@@ -171,19 +176,22 @@ export function calculateScores(
 
 function checkAnswer(parsed: ParsedResponse, answerKey: AnswerKeyItem): boolean {
   if (answerKey.question_type === "numerical") {
-    if (parsed.claimed_numeric_value === undefined) return false;
+    if (parsed.claimed_numeric_value === undefined || parsed.claimed_numeric_value === null) return false;
     if (answerKey.correct_numeric_value === null) return false;
     
-    const tolerance = answerKey.numeric_tolerance || 0;
+    // Use tolerance for numerical comparison
+    const tolerance = answerKey.numeric_tolerance || 0.01;
     const diff = Math.abs(parsed.claimed_numeric_value - answerKey.correct_numeric_value);
     return diff <= tolerance;
   }
 
   // MCQ single or MSQ
   if (!parsed.claimed_option_ids || !answerKey.correct_option_ids) return false;
+  if (parsed.claimed_option_ids.length === 0 || answerKey.correct_option_ids.length === 0) return false;
 
-  const claimed = [...parsed.claimed_option_ids].sort().join(",");
-  const correct = [...answerKey.correct_option_ids].sort().join(",");
+  // Normalize to strings and sort for comparison
+  const claimed = parsed.claimed_option_ids.map(id => String(id)).sort().join(",");
+  const correct = answerKey.correct_option_ids.map(id => String(id)).sort().join(",");
   
   return claimed === correct;
 }
