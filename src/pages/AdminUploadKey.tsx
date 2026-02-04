@@ -365,28 +365,17 @@ const AdminUploadKey = () => {
     }
   };
 
-  const validateSelection = (): boolean => {
-    let valid = true;
-    setDateError("");
-    setShiftError("");
-
-    if (!selectedDate) {
-      setDateError("Please select an exam date.");
-      valid = false;
-    }
-    if (!selectedShift) {
-      setShiftError("Please select a shift.");
-      valid = false;
-    }
-    if (!selectedTestId) {
-      setError("No test found for the selected date and shift.");
-      valid = false;
-    }
-    return valid;
-  };
+  // Compute upload readiness
+  const isReadyToUpload = parsedKeys.length > 0 && !!selectedDate && !!selectedShift;
+  const uploadStatusLabel = loading 
+    ? "Uploading…" 
+    : isReadyToUpload 
+      ? "Ready to upload" 
+      : "Select date & shift";
 
   const handleUpload = async () => {
-    if (!validateSelection()) {
+    if (!selectedDate || !selectedShift) {
+      setError("Please select both exam date and shift.");
       return;
     }
 
@@ -399,22 +388,97 @@ const AdminUploadKey = () => {
     setError("");
 
     try {
-      // Delete existing answer keys for this test
-      await supabase.from("answer_keys").delete().eq("test_id", selectedTestId);
+      // Normalize date and shift
+      const normalizedDate = normalizeExamDate(selectedDate);
+      const normalizedShift = normalizeShift(selectedShift);
 
-      // Insert new answer keys
+      if (!normalizedDate || !normalizedShift) {
+        throw new Error("Invalid date or shift format");
+      }
+
+      // 1. Upsert the test (create if missing)
+      let testId = selectedTestId;
+
+      if (!testId) {
+        // Check if test exists
+        const { data: existingTest, error: checkError } = await supabase
+          .from("tests")
+          .select("id")
+          .eq("exam_date", normalizedDate)
+          .eq("shift", normalizedShift)
+          .maybeSingle();
+
+        if (checkError) {
+          console.error("Error checking test:", checkError);
+          throw new Error("Failed to check for existing test");
+        }
+
+        if (existingTest) {
+          testId = existingTest.id;
+        } else {
+          // Create new test
+          const { data: newTest, error: createError } = await supabase
+            .from("tests")
+            .insert({
+              name: `JEE Main - ${getExamDateLabel(normalizedDate)} ${normalizedShift}`,
+              exam_date: normalizedDate,
+              shift: normalizedShift,
+              is_active: true,
+              marking_rules_json: {
+                mcq_single: { correct: 4, wrong: -1, unattempted: 0 },
+                numerical: { correct: 4, wrong: -1, unattempted: 0 },
+                msq: { correct: 4, wrong: -2, unattempted: 0 },
+              },
+            })
+            .select("id")
+            .single();
+
+          if (createError) {
+            console.error("Error creating test:", createError);
+            toast({
+              title: "Failed to create test",
+              description: createError.message,
+              variant: "destructive",
+            });
+            throw new Error(`Failed to create test: ${createError.message}`);
+          }
+
+          testId = newTest.id;
+          console.log("Created new test:", testId);
+        }
+      }
+
+      // 2. Delete existing answer keys for this test
+      await supabase.from("answer_keys").delete().eq("test_id", testId);
+
+      // 3. Insert new answer keys
       const keysToInsert = parsedKeys.map((key) => ({
-        test_id: selectedTestId,
+        test_id: testId,
         ...key,
       }));
 
       const { error: insertError } = await supabase.from("answer_keys").insert(keysToInsert);
 
-      if (insertError) throw insertError;
+      if (insertError) {
+        toast({
+          title: "Failed to insert answer keys",
+          description: insertError.message,
+          variant: "destructive",
+        });
+        throw insertError;
+      }
+
+      // 4. Verify the import
+      const { data: verifyData } = await supabase
+        .from("answer_keys")
+        .select("subject")
+        .eq("test_id", testId);
+
+      const keyCount = verifyData?.length || 0;
 
       toast({
         title: "Success!",
-        description: `Uploaded ${parsedKeys.length} answer keys`,
+        description: `Uploaded ${keyCount} answer keys`,
       });
 
       // Reset form
@@ -423,7 +487,7 @@ const AdminUploadKey = () => {
       navigate("/admin/tests");
     } catch (err) {
       console.error("Upload error:", err);
-      setError("Failed to upload answer keys. Please try again.");
+      setError(`Failed to upload answer keys: ${err instanceof Error ? err.message : "Unknown error"}`);
     } finally {
       setLoading(false);
     }
@@ -541,8 +605,8 @@ const AdminUploadKey = () => {
               
               {/* Import Verification Result */}
               {lastImportResult && (
-                <Alert className="border-green-500/50 bg-green-500/10">
-                  <CheckCircle className="h-4 w-4 text-green-600" />
+                <Alert className="border-primary/50 bg-primary/10">
+                  <CheckCircle className="h-4 w-4 text-primary" />
                   <AlertDescription className="text-foreground">
                     <div className="space-y-1">
                       <p className="font-semibold">✓ Import Verified in Database</p>
@@ -708,8 +772,18 @@ const AdminUploadKey = () => {
                 </Alert>
               )}
 
+              {/* Helper message when date/shift missing */}
+              {parsedKeys.length > 0 && (!selectedDate || !selectedShift) && (
+                <Alert className="border-destructive/50 bg-destructive/10">
+                  <AlertCircle className="h-4 w-4 text-destructive" />
+                  <AlertDescription className="text-foreground">
+                    Select exam date and shift to upload keys
+                  </AlertDescription>
+                </Alert>
+              )}
+
               {/* Actions */}
-              <div className="flex gap-2">
+              <div className="flex gap-2 items-center">
                 <Button
                   variant="outline"
                   onClick={parseCSV}
@@ -727,8 +801,9 @@ const AdminUploadKey = () => {
                 </Button>
                 <Button
                   onClick={handleUpload}
-                  disabled={loading || parsedKeys.length === 0 || !selectedTestId}
-                  className="flex-1"
+                  disabled={loading || !isReadyToUpload}
+                  className="flex-1 relative"
+                  style={{ pointerEvents: 'auto' }}
                 >
                   {loading ? (
                     <>
@@ -742,6 +817,15 @@ const AdminUploadKey = () => {
                     </>
                   )}
                 </Button>
+              </div>
+
+              {/* Status label */}
+              <div className="text-center">
+                <Badge 
+                  variant={isReadyToUpload ? "default" : "secondary"}
+                >
+                  {uploadStatusLabel}
+                </Badge>
               </div>
             </CardContent>
           </Card>
