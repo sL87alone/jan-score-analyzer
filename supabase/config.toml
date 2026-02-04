@@ -8,3 +8,6 @@ verify_jwt = false
 
 [functions.admin-seed-tests]
 verify_jwt = false
+
+[functions.upload-answer-keys]
+verify_jwt = false
