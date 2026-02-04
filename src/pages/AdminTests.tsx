@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
+import { format } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -24,11 +24,25 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Calendar } from "@/components/ui/calendar";
 import { Switch } from "@/components/ui/switch";
-import { Plus, Pencil, Trash2, LogOut, Loader2, Upload, Settings } from "lucide-react";
+import { Plus, Pencil, Trash2, LogOut, Loader2, Upload, CalendarIcon } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Test, MarkingRules } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
+import { cn } from "@/lib/utils";
 
 const defaultMarkingRules: MarkingRules = {
   mcq_single: { correct: 4, wrong: -1, unattempted: 0 },
@@ -49,7 +63,7 @@ const AdminTests = () => {
   // Form state
   const [name, setName] = useState("");
   const [shift, setShift] = useState("");
-  const [examDate, setExamDate] = useState("");
+  const [examDate, setExamDate] = useState<Date | undefined>(undefined);
   const [markingRules, setMarkingRules] = useState<MarkingRules>(defaultMarkingRules);
   const [isActive, setIsActive] = useState(true);
 
@@ -81,7 +95,7 @@ const AdminTests = () => {
     const { data, error } = await supabase
       .from("tests")
       .select("*")
-      .order("created_at", { ascending: false });
+      .order("exam_date", { ascending: false });
 
     if (data) {
       setTests(data as unknown as Test[]);
@@ -100,7 +114,7 @@ const AdminTests = () => {
   const resetForm = () => {
     setName("");
     setShift("");
-    setExamDate("");
+    setExamDate(undefined);
     setMarkingRules(defaultMarkingRules);
     setIsActive(true);
     setEditingTest(null);
@@ -110,17 +124,17 @@ const AdminTests = () => {
     setEditingTest(test);
     setName(test.name);
     setShift(test.shift);
-    setExamDate(test.exam_date || "");
+    setExamDate(test.exam_date ? new Date(test.exam_date) : undefined);
     setMarkingRules(test.marking_rules_json);
     setIsActive(test.is_active);
     setDialogOpen(true);
   };
 
   const handleSubmit = async () => {
-    if (!name.trim() || !shift.trim()) {
+    if (!name.trim() || !shift || !examDate) {
       toast({
         title: "Error",
-        description: "Name and shift are required.",
+        description: "Name, exam date, and shift are required.",
         variant: "destructive",
       });
       return;
@@ -129,14 +143,16 @@ const AdminTests = () => {
     setCreating(true);
 
     try {
+      const examDateStr = format(examDate, "yyyy-MM-dd");
+
       if (editingTest) {
         // Update existing test
         const { error } = await supabase
           .from("tests")
           .update({
             name: name.trim(),
-            shift: shift.trim(),
-            exam_date: examDate || null,
+            shift: shift,
+            exam_date: examDateStr,
             marking_rules_json: JSON.parse(JSON.stringify(markingRules)),
             is_active: isActive,
           })
@@ -154,8 +170,8 @@ const AdminTests = () => {
           .from("tests")
           .insert({
             name: name.trim(),
-            shift: shift.trim(),
-            exam_date: examDate || null,
+            shift: shift,
+            exam_date: examDateStr,
             marking_rules_json: JSON.parse(JSON.stringify(markingRules)),
             is_active: isActive,
           });
@@ -171,10 +187,16 @@ const AdminTests = () => {
       setDialogOpen(false);
       resetForm();
       fetchTests();
-    } catch (err) {
+    } catch (err: any) {
+      const errorMessage = err?.message?.includes("tests_exam_date_shift_unique")
+        ? "A test with this date and shift already exists."
+        : err?.message?.includes("tests_shift_valid")
+        ? "Shift must be 'Shift 1' or 'Shift 2'."
+        : "Failed to save test.";
+      
       toast({
         title: "Error",
-        description: "Failed to save test.",
+        description: errorMessage,
         variant: "destructive",
       });
     } finally {
@@ -201,6 +223,15 @@ const AdminTests = () => {
         description: "Test deleted successfully.",
       });
       fetchTests();
+    }
+  };
+
+  const formatExamDate = (dateStr: string | undefined) => {
+    if (!dateStr) return "-";
+    try {
+      return format(new Date(dateStr), "d MMMM yyyy");
+    } catch {
+      return dateStr;
     }
   };
 
@@ -257,35 +288,60 @@ const AdminTests = () => {
                 </DialogHeader>
 
                 <div className="space-y-4 py-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="name">Test Name</Label>
-                      <Input
-                        id="name"
-                        placeholder="JEE Main Jan 2026"
-                        value={name}
-                        onChange={(e) => setName(e.target.value)}
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="shift">Shift</Label>
-                      <Input
-                        id="shift"
-                        placeholder="Shift 1"
-                        value={shift}
-                        onChange={(e) => setShift(e.target.value)}
-                      />
-                    </div>
+                  {/* Test Name */}
+                  <div className="space-y-2">
+                    <Label htmlFor="name">Test Name</Label>
+                    <Input
+                      id="name"
+                      placeholder="JEE Main Jan 2026"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                    />
                   </div>
 
-                  <div className="space-y-2">
-                    <Label htmlFor="date">Exam Date (optional)</Label>
-                    <Input
-                      id="date"
-                      type="date"
-                      value={examDate}
-                      onChange={(e) => setExamDate(e.target.value)}
-                    />
+                  {/* Exam Date and Shift Row */}
+                  <div className="grid grid-cols-2 gap-4">
+                    {/* Exam Date Picker */}
+                    <div className="space-y-2">
+                      <Label>Exam Date</Label>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant="outline"
+                            className={cn(
+                              "w-full justify-start text-left font-normal",
+                              !examDate && "text-muted-foreground"
+                            )}
+                          >
+                            <CalendarIcon className="mr-2 h-4 w-4" />
+                            {examDate ? format(examDate, "d MMM yyyy") : <span>Pick a date</span>}
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={examDate}
+                            onSelect={setExamDate}
+                            initialFocus
+                            className="p-3 pointer-events-auto"
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+
+                    {/* Shift Dropdown */}
+                    <div className="space-y-2">
+                      <Label htmlFor="shift">Shift</Label>
+                      <Select value={shift} onValueChange={setShift}>
+                        <SelectTrigger id="shift">
+                          <SelectValue placeholder="Select shift" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="Shift 1">Shift 1</SelectItem>
+                          <SelectItem value="Shift 2">Shift 2</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
                   </div>
 
                   <div className="space-y-2">
@@ -352,8 +408,8 @@ const AdminTests = () => {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Name</TableHead>
+                      <TableHead>Exam Date</TableHead>
                       <TableHead>Shift</TableHead>
-                      <TableHead>Date</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
@@ -362,10 +418,8 @@ const AdminTests = () => {
                     {tests.map((test) => (
                       <TableRow key={test.id}>
                         <TableCell className="font-medium">{test.name}</TableCell>
+                        <TableCell>{formatExamDate(test.exam_date)}</TableCell>
                         <TableCell>{test.shift}</TableCell>
-                        <TableCell>
-                          {test.exam_date ? new Date(test.exam_date).toLocaleDateString() : "-"}
-                        </TableCell>
                         <TableCell>
                           <Badge variant={test.is_active ? "default" : "secondary"}>
                             {test.is_active ? "Active" : "Inactive"}

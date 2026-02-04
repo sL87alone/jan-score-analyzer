@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
+import { format } from "date-fns";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/landing/Footer";
 import { Button } from "@/components/ui/button";
@@ -16,7 +17,7 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Upload, Link as LinkIcon, FileText, Loader2, AlertCircle, Zap } from "lucide-react";
+import { Upload, Link as LinkIcon, FileText, Loader2, AlertCircle, Zap, Calendar, Clock } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { parseResponseSheetHTML, validateResponseSheet } from "@/lib/parser";
 import { calculateScores } from "@/lib/scoring";
@@ -30,33 +31,93 @@ const Analyze = () => {
   const [inputMethod, setInputMethod] = useState<"url" | "html">("url");
   const [url, setUrl] = useState("");
   const [file, setFile] = useState<File | null>(null);
-  const [tests, setTests] = useState<Test[]>([]);
+  
+  // Date and Shift selection
+  const [examDates, setExamDates] = useState<string[]>([]);
+  const [selectedDate, setSelectedDate] = useState("");
+  const [availableShifts, setAvailableShifts] = useState<string[]>([]);
+  const [selectedShift, setSelectedShift] = useState("");
   const [selectedTestId, setSelectedTestId] = useState("");
+  const [tests, setTests] = useState<Test[]>([]);
+  
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [dateError, setDateError] = useState("");
+  const [shiftError, setShiftError] = useState("");
   const [showUploadFallback, setShowUploadFallback] = useState(false);
 
   useEffect(() => {
-    fetchTests();
+    fetchExamDates();
+    fetchAllTests();
   }, []);
 
-  const fetchTests = async () => {
+  // Fetch distinct exam dates
+  const fetchExamDates = async () => {
+    const { data, error } = await supabase
+      .from("tests")
+      .select("exam_date")
+      .eq("is_active", true)
+      .not("exam_date", "is", null)
+      .order("exam_date", { ascending: true });
+
+    if (data) {
+      // Get unique dates
+      const uniqueDates = [...new Set(data.map(t => t.exam_date).filter(Boolean))] as string[];
+      setExamDates(uniqueDates);
+    }
+    if (error) {
+      console.error("Error fetching exam dates:", error);
+    }
+  };
+
+  // Fetch all active tests for reference
+  const fetchAllTests = async () => {
     const { data, error } = await supabase
       .from("tests")
       .select("*")
       .eq("is_active", true)
-      .order("created_at", { ascending: false });
+      .not("exam_date", "is", null);
 
     if (data) {
       setTests(data as unknown as Test[]);
-      if (data.length > 0) {
-        setSelectedTestId(data[0].id);
-      }
     }
     if (error) {
       console.error("Error fetching tests:", error);
     }
   };
+
+  // When date changes, fetch available shifts
+  useEffect(() => {
+    if (selectedDate) {
+      const shiftsForDate = tests
+        .filter(t => t.exam_date === selectedDate)
+        .map(t => t.shift);
+      setAvailableShifts([...new Set(shiftsForDate)]);
+      setSelectedShift(""); // Reset shift when date changes
+      setSelectedTestId("");
+      setShiftError("");
+    } else {
+      setAvailableShifts([]);
+      setSelectedShift("");
+      setSelectedTestId("");
+    }
+  }, [selectedDate, tests]);
+
+  // When shift changes, resolve test_id
+  useEffect(() => {
+    if (selectedDate && selectedShift) {
+      const matchingTest = tests.find(
+        t => t.exam_date === selectedDate && t.shift === selectedShift
+      );
+      if (matchingTest) {
+        setSelectedTestId(matchingTest.id);
+      } else {
+        setSelectedTestId("");
+      }
+    } else {
+      setSelectedTestId("");
+    }
+  }, [selectedDate, selectedShift, tests]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -72,6 +133,22 @@ const Analyze = () => {
       setFile(selectedFile);
       setError("");
     }
+  };
+
+  const validateSelection = (): boolean => {
+    let valid = true;
+    setDateError("");
+    setShiftError("");
+
+    if (!selectedDate) {
+      setDateError("Please select an exam date.");
+      valid = false;
+    }
+    if (!selectedShift) {
+      setShiftError("Please select a shift.");
+      valid = false;
+    }
+    return valid;
   };
 
   const processAnalysis = useCallback(async (htmlContent: string, sourceType: "url" | "html") => {
@@ -90,7 +167,7 @@ const Analyze = () => {
     // Get the selected test
     const selectedTest = tests.find((t) => t.id === selectedTestId);
     if (!selectedTest) {
-      throw new Error("Please select a test/shift.");
+      throw new Error("Please select a valid exam date and shift.");
     }
 
     // Get answer keys for the test
@@ -148,6 +225,10 @@ const Analyze = () => {
   }, [selectedTestId, tests]);
 
   const handleUrlSubmit = async () => {
+    if (!validateSelection()) {
+      return;
+    }
+
     if (!url.trim()) {
       setError("Please enter a URL");
       return;
@@ -185,6 +266,10 @@ const Analyze = () => {
   };
 
   const handleFileSubmit = async () => {
+    if (!validateSelection()) {
+      return;
+    }
+
     if (!file) {
       setError("Please select an HTML file");
       return;
@@ -208,6 +293,16 @@ const Analyze = () => {
       setLoading(false);
     }
   };
+
+  const formatExamDate = (dateStr: string) => {
+    try {
+      return format(new Date(dateStr), "d MMMM yyyy");
+    } catch {
+      return dateStr;
+    }
+  };
+
+  const isSubmitDisabled = !selectedDate || !selectedShift || loading;
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -240,27 +335,78 @@ const Analyze = () => {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
-                {/* Test Selection */}
-                <div className="space-y-2">
-                  <Label htmlFor="test">Select Test / Shift</Label>
-                  <Select value={selectedTestId} onValueChange={setSelectedTestId}>
-                    <SelectTrigger id="test">
-                      <SelectValue placeholder="Select test..." />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {tests.length === 0 ? (
-                        <SelectItem value="none" disabled>
-                          No tests available
-                        </SelectItem>
-                      ) : (
-                        tests.map((test) => (
-                          <SelectItem key={test.id} value={test.id}>
-                            {test.name} – {test.shift}
+                {/* Exam Date and Shift Selection */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Exam Date Dropdown */}
+                  <div className="space-y-2">
+                    <Label htmlFor="exam-date" className="flex items-center gap-2">
+                      <Calendar className="w-4 h-4 text-muted-foreground" />
+                      Exam Date
+                    </Label>
+                    <Select value={selectedDate} onValueChange={(value) => {
+                      setSelectedDate(value);
+                      setDateError("");
+                    }}>
+                      <SelectTrigger id="exam-date" className={dateError ? "border-destructive" : ""}>
+                        <SelectValue placeholder="Select exam date" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {examDates.length === 0 ? (
+                          <SelectItem value="none" disabled>
+                            No exam dates available
                           </SelectItem>
-                        ))
-                      )}
-                    </SelectContent>
-                  </Select>
+                        ) : (
+                          examDates.map((date) => (
+                            <SelectItem key={date} value={date}>
+                              {formatExamDate(date)}
+                            </SelectItem>
+                          ))
+                        )}
+                      </SelectContent>
+                    </Select>
+                    {dateError && (
+                      <p className="text-xs text-destructive">{dateError}</p>
+                    )}
+                  </div>
+
+                  {/* Shift Dropdown */}
+                  <div className="space-y-2">
+                    <Label htmlFor="shift" className="flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-muted-foreground" />
+                      Shift
+                    </Label>
+                    <Select 
+                      value={selectedShift} 
+                      onValueChange={(value) => {
+                        setSelectedShift(value);
+                        setShiftError("");
+                      }}
+                      disabled={!selectedDate}
+                    >
+                      <SelectTrigger id="shift" className={shiftError ? "border-destructive" : ""}>
+                        <SelectValue placeholder="Select shift" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableShifts.length === 0 ? (
+                          <SelectItem value="none" disabled>
+                            No shifts available
+                          </SelectItem>
+                        ) : (
+                          availableShifts.map((shift) => (
+                            <SelectItem key={shift} value={shift}>
+                              {shift}
+                            </SelectItem>
+                          ))
+                        )}
+                      </SelectContent>
+                    </Select>
+                    {!selectedDate && !shiftError && (
+                      <p className="text-xs text-muted-foreground">Select an exam date first</p>
+                    )}
+                    {shiftError && (
+                      <p className="text-xs text-destructive">{shiftError}</p>
+                    )}
+                  </div>
                 </div>
 
                 {/* Input Method Tabs */}
@@ -292,7 +438,7 @@ const Analyze = () => {
                     </div>
                     <Button 
                       onClick={handleUrlSubmit} 
-                      disabled={loading || !selectedTestId}
+                      disabled={isSubmitDisabled}
                       className="w-full"
                       size="lg"
                     >
@@ -338,7 +484,7 @@ const Analyze = () => {
                     </div>
                     <Button 
                       onClick={handleFileSubmit} 
-                      disabled={loading || !file || !selectedTestId}
+                      disabled={isSubmitDisabled || !file}
                       className="w-full"
                       size="lg"
                     >
