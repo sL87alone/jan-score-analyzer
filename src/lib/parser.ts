@@ -1,32 +1,69 @@
 import { ParsedResponse } from "./types";
-import { parseDigialmResponseSheet, isDigialmFormat, getDigialmDiagnostic, getDigialmDebugInfo, ParserDebugInfo } from "./digialmParser";
+import { parseDigialmResponseSheet, isDigialmFormat, getDigialmDiagnostic, getDigialmDebugInfo, ParserDebugInfo, NumericalExtractExample, extractNumericalExamples } from "./digialmParser";
 
-export type { ParserDebugInfo } from "./digialmParser";
-export { getDigialmDebugInfo } from "./digialmParser";
+export type { ParserDebugInfo, NumericalExtractExample } from "./digialmParser";
+export { getDigialmDebugInfo, extractNumericalExamples } from "./digialmParser";
 
 /**
- * Deduplicate responses by question_id, keeping the last occurrence
- * Also ensures question_id is always a string
+ * Smart deduplication that preserves answers:
+ * - Keeps non-empty answers when merging duplicates
+ * - For MSQ, merges option sets
+ * - Ensures all IDs are strings
  */
 function deduplicateResponses(responses: ParsedResponse[]): ParsedResponse[] {
   const map = new Map<string, ParsedResponse>();
+  
   for (const r of responses) {
-    // Ensure question_id is always a string
     const qid = String(r.question_id);
-    map.set(qid, {
-      ...r,
-      question_id: qid,
-      // Ensure option IDs are strings too
-      claimed_option_ids: r.claimed_option_ids?.map(id => String(id)),
-    });
+    const existing = map.get(qid);
+    
+    if (!existing) {
+      // First occurrence - normalize and add
+      map.set(qid, {
+        question_id: qid,
+        claimed_option_ids: r.claimed_option_ids?.map(id => String(id)),
+        claimed_numeric_value: r.claimed_numeric_value,
+        is_attempted: r.is_attempted,
+      });
+    } else {
+      // Merge: keep the answer that exists
+      const merged: ParsedResponse = {
+        question_id: qid,
+        is_attempted: existing.is_attempted || r.is_attempted,
+      };
+      
+      // For numeric values - prefer non-undefined
+      if (existing.claimed_numeric_value !== undefined) {
+        merged.claimed_numeric_value = existing.claimed_numeric_value;
+      } else if (r.claimed_numeric_value !== undefined) {
+        merged.claimed_numeric_value = r.claimed_numeric_value;
+      }
+      
+      // For option IDs - merge as set union (for MSQ)
+      if (existing.claimed_option_ids || r.claimed_option_ids) {
+        const optionSet = new Set<string>();
+        existing.claimed_option_ids?.forEach(id => optionSet.add(String(id)));
+        r.claimed_option_ids?.forEach(id => optionSet.add(String(id)));
+        if (optionSet.size > 0) {
+          merged.claimed_option_ids = Array.from(optionSet);
+        }
+      }
+      
+      // Update is_attempted based on whether we have any answer
+      merged.is_attempted = merged.claimed_numeric_value !== undefined || 
+                           (merged.claimed_option_ids && merged.claimed_option_ids.length > 0);
+      
+      map.set(qid, merged);
+    }
   }
+  
   return Array.from(map.values());
 }
 
 /**
  * Parse JEE Main Response Sheet HTML to extract student responses
  * Supports multiple formats: Digialm (cdn3.digialm.com) and traditional table format
- * Returns deduplicated responses by question_id
+ * Returns deduplicated responses by question_id with smart answer merging
  */
 export function parseResponseSheetHTML(html: string): { responses: ParsedResponse[]; rawCount: number } {
   let rawResponses: ParsedResponse[] = [];
@@ -40,8 +77,19 @@ export function parseResponseSheetHTML(html: string): { responses: ParsedRespons
     rawResponses = parseDigialmResponseSheet(html);
     if (rawResponses.length > 0) {
       console.log(`Digialm parser found ${rawResponses.length} raw responses`);
+      
+      // Log numerical answers found
+      const numericalResponses = rawResponses.filter(r => r.claimed_numeric_value !== undefined);
+      console.log(`Found ${numericalResponses.length} numerical answers in raw responses`);
+      
       const deduplicated = deduplicateResponses(rawResponses);
       console.log(`After deduplication: ${deduplicated.length} unique responses`);
+      
+      // Count attempted
+      const attempted = deduplicated.filter(r => r.is_attempted).length;
+      const numAttempted = deduplicated.filter(r => r.claimed_numeric_value !== undefined).length;
+      console.log(`Attempted: ${attempted}, Numerical attempted: ${numAttempted}`);
+      
       return { responses: deduplicated, rawCount: rawResponses.length };
     }
     console.log("Digialm parser returned 0 responses, falling back to generic parser");
@@ -244,7 +292,14 @@ export interface MatchingStats {
     subject: string;
     matched: number;
     total: number;
+    attempted: number;
   }[];
+  numericalStats: {
+    total: number;
+    attempted: number;
+    examples: { questionId: string; value: number | string | null; isAttempted: boolean }[];
+  };
+  totalAttempted: number;
 }
 
 /**
@@ -256,6 +311,9 @@ export function matchResponsesWithKeys(
 ): MatchingStats {
   const keyMap = new Map<string, { subject: string; question_type: string }>();
   answerKeys.forEach(k => keyMap.set(String(k.question_id), { subject: k.subject, question_type: k.question_type }));
+  
+  const responseMap = new Map<string, ParsedResponse>();
+  parsedResponses.forEach(r => responseMap.set(String(r.question_id), r));
   
   const parsedIds = new Set(parsedResponses.map(r => String(r.question_id)));
   const keyIds = new Set(answerKeys.map(k => String(k.question_id)));
@@ -272,11 +330,11 @@ export function matchResponsesWithKeys(
     }
   });
   
-  // Subject breakdown from matched responses
-  const subjectCounts: Record<string, { matched: number; total: number }> = {
-    Mathematics: { matched: 0, total: 0 },
-    Physics: { matched: 0, total: 0 },
-    Chemistry: { matched: 0, total: 0 },
+  // Subject breakdown with attempted counts
+  const subjectCounts: Record<string, { matched: number; total: number; attempted: number }> = {
+    Mathematics: { matched: 0, total: 0, attempted: 0 },
+    Physics: { matched: 0, total: 0, attempted: 0 },
+    Chemistry: { matched: 0, total: 0, attempted: 0 },
   };
   
   // Count total per subject from answer keys
@@ -286,13 +344,44 @@ export function matchResponsesWithKeys(
     }
   });
   
-  // Count matched per subject
+  // Count matched and attempted per subject
   matched.forEach(id => {
     const key = keyMap.get(id);
+    const response = responseMap.get(id);
     if (key && subjectCounts[key.subject]) {
       subjectCounts[key.subject].matched++;
+      if (response?.is_attempted) {
+        subjectCounts[key.subject].attempted++;
+      }
     }
   });
+  
+  // Numerical stats
+  const numericalKeys = answerKeys.filter(k => k.question_type === "numerical");
+  const numericalExamples: { questionId: string; value: number | string | null; isAttempted: boolean }[] = [];
+  let numericalAttempted = 0;
+  
+  numericalKeys.forEach(k => {
+    const response = responseMap.get(String(k.question_id));
+    const isAttempted = response?.claimed_numeric_value !== undefined;
+    if (isAttempted) {
+      numericalAttempted++;
+    }
+    
+    if (numericalExamples.length < 10) {
+      numericalExamples.push({
+        questionId: String(k.question_id),
+        value: response?.claimed_numeric_value ?? null,
+        isAttempted,
+      });
+    }
+  });
+  
+  // Total attempted across all matched
+  const totalAttempted = parsedResponses.filter(r => {
+    const id = String(r.question_id);
+    return keyIds.has(id) && r.is_attempted;
+  }).length;
   
   return {
     rawParsedCount: 0, // Will be set by caller
@@ -303,6 +392,13 @@ export function matchResponsesWithKeys(
       subject,
       matched: counts.matched,
       total: counts.total,
+      attempted: counts.attempted,
     })),
+    numericalStats: {
+      total: numericalKeys.length,
+      attempted: numericalAttempted,
+      examples: numericalExamples,
+    },
+    totalAttempted,
   };
 }

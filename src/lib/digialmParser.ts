@@ -22,6 +22,17 @@ export interface ParserDebugInfo {
   largestScriptPreview: string;
   strategyUsed: string;
   responseCount: number;
+  numericalExamples: NumericalExtractExample[];
+}
+
+/**
+ * Example of numerical answer extraction for debugging
+ */
+export interface NumericalExtractExample {
+  questionId: string;
+  extractedValue: string | number | null;
+  rawSnippet: string;
+  isAttempted: boolean;
 }
 
 /**
@@ -523,6 +534,7 @@ function parseWithTextStrategy(html: string): ParsedResponse[] {
 
 /**
  * Build a ParsedResponse from extracted data
+ * Now correctly handles numerical answers including from "Given Answer" field
  */
 function buildResponse(
   questionId: string,
@@ -534,45 +546,59 @@ function buildResponse(
 ): ParsedResponse | null {
   if (!questionId) return null;
   
-  const isAnswered = status.toLowerCase().includes("answered") && 
-                     !status.toLowerCase().includes("not answered");
+  // Check if answered based on status or presence of answer
+  const statusLower = status.toLowerCase();
+  const hasChosenOption = chosenOption && chosenOption !== "--" && chosenOption !== "-" && chosenOption !== "";
+  const hasGivenAnswer = givenAnswer && 
+    givenAnswer !== "--" && 
+    givenAnswer !== "-" && 
+    givenAnswer !== "" && 
+    givenAnswer.toLowerCase() !== "na" &&
+    givenAnswer.toLowerCase() !== "not answered";
   
-  if (questionType === "numerical") {
-    if (givenAnswer && givenAnswer !== "--" && givenAnswer !== "-") {
-      const numValue = parseFloat(givenAnswer);
+  // For numerical type questions OR if we have a given answer (which indicates numerical)
+  if (questionType === "numerical" || hasGivenAnswer) {
+    // Try to parse the given answer as a number
+    if (hasGivenAnswer) {
+      const cleanedAnswer = givenAnswer.trim();
+      const numValue = parseFloat(cleanedAnswer);
       if (!isNaN(numValue)) {
         return {
-          question_id: questionId,
+          question_id: String(questionId),
           claimed_numeric_value: numValue,
           is_attempted: true,
         };
       }
     }
-    return { question_id: questionId, is_attempted: false };
+    
+    // If no valid given answer for numerical, mark as unattempted
+    if (questionType === "numerical") {
+      return { question_id: String(questionId), is_attempted: false };
+    }
   }
   
-  // MCQ
-  if (chosenOption && chosenOption !== "--" && chosenOption !== "-") {
+  // MCQ handling
+  if (hasChosenOption) {
     const optNum = parseInt(chosenOption, 10);
     if (optNum >= 1 && optNum <= 4) {
       const optionId = optionIds[optNum];
       if (optionId) {
         return {
-          question_id: questionId,
-          claimed_option_ids: [optionId],
+          question_id: String(questionId),
+          claimed_option_ids: [String(optionId)],
           is_attempted: true,
         };
       }
       // Fallback to using option number directly
       return {
-        question_id: questionId,
+        question_id: String(questionId),
         claimed_option_ids: [String(optNum)],
         is_attempted: true,
       };
     }
   }
   
-  return { question_id: questionId, is_attempted: false };
+  return { question_id: String(questionId), is_attempted: false };
 }
 
 /**
@@ -591,6 +617,42 @@ export function isDigialmFormat(html: string): boolean {
 
   const matchCount = markers.filter(pattern => pattern.test(html)).length;
   return matchCount >= 2;
+}
+
+/**
+ * Extract numerical answer examples from HTML for debugging
+ */
+export function extractNumericalExamples(html: string): NumericalExtractExample[] {
+  const examples: NumericalExtractExample[] = [];
+  
+  // Pattern to find question blocks with Given Answer
+  const givenAnswerPattern = /Question\s*ID\s*[:\s]*(\d{6,12})[\s\S]{0,500}?Given\s*Answer\s*[:\s]*([^\n<]{1,30})/gi;
+  let match;
+  
+  while ((match = givenAnswerPattern.exec(html)) !== null && examples.length < 15) {
+    const questionId = match[1];
+    const rawValue = match[2].trim();
+    
+    // Clean and check the value
+    const isUnattempted = rawValue === "--" || rawValue === "-" || 
+                          rawValue === "" || rawValue.toLowerCase() === "na" ||
+                          rawValue.toLowerCase().includes("not answered");
+    
+    let extractedValue: string | number | null = null;
+    if (!isUnattempted) {
+      const parsed = parseFloat(rawValue);
+      extractedValue = isNaN(parsed) ? rawValue : parsed;
+    }
+    
+    examples.push({
+      questionId,
+      extractedValue,
+      rawSnippet: rawValue.substring(0, 30),
+      isAttempted: !isUnattempted && extractedValue !== null,
+    });
+  }
+  
+  return examples;
 }
 
 /**
@@ -635,6 +697,9 @@ export function getDigialmDebugInfo(html: string): ParserDebugInfo {
   // Get largest script content
   const largestScript = scripts.sort((a, b) => b.length - a.length)[0] || "";
   
+  // Extract numerical examples for debugging
+  const numericalExamples = extractNumericalExamples(html);
+  
   return {
     htmlLength: html.length,
     markers: {
@@ -654,6 +719,7 @@ export function getDigialmDebugInfo(html: string): ParserDebugInfo {
     largestScriptPreview: largestScript.substring(0, 2000),
     strategyUsed: "",
     responseCount: 0,
+    numericalExamples,
   };
 }
 
