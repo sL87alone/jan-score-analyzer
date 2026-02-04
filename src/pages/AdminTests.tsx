@@ -36,6 +36,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Test, MarkingRules } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
 import { EXAM_DATES, SHIFTS, getExamDateLabel } from "@/lib/examDates";
+import { useAdminAuth } from "@/hooks/useAdminAuth";
 
 const defaultMarkingRules: MarkingRules = {
   mcq_single: { correct: 4, wrong: -1, unattempted: 0 },
@@ -46,6 +47,7 @@ const defaultMarkingRules: MarkingRules = {
 const AdminTests = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { isAuthenticated, adminId, logout, loading: authLoading } = useAdminAuth();
 
   const [tests, setTests] = useState<Test[]>([]);
   const [loading, setLoading] = useState(true);
@@ -56,33 +58,21 @@ const AdminTests = () => {
   // Form state
   const [name, setName] = useState("");
   const [shift, setShift] = useState("");
-  const [examDate, setExamDate] = useState(""); // ISO date string
+  const [examDate, setExamDate] = useState("");
   const [markingRules, setMarkingRules] = useState<MarkingRules>(defaultMarkingRules);
   const [isActive, setIsActive] = useState(true);
 
   useEffect(() => {
-    checkAuth();
-    fetchTests();
-  }, []);
-
-  const checkAuth = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      navigate("/admin");
-      return;
-    }
-
-    const { data: roles } = await supabase
-      .from("user_roles")
-      .select("role")
-      .eq("user_id", user.id)
-      .eq("role", "admin")
-      .maybeSingle();
-
-    if (!roles) {
+    if (!authLoading && !isAuthenticated) {
       navigate("/admin");
     }
-  };
+  }, [authLoading, isAuthenticated, navigate]);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchTests();
+    }
+  }, [isAuthenticated]);
 
   const fetchTests = async () => {
     const { data, error } = await supabase
@@ -100,7 +90,7 @@ const AdminTests = () => {
   };
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    await logout();
     navigate("/admin");
   };
 
@@ -136,10 +126,9 @@ const AdminTests = () => {
     setCreating(true);
 
     try {
-      const examDateStr = examDate; // Already in ISO format
+      const examDateStr = examDate;
 
       if (editingTest) {
-        // Update existing test
         const { error } = await supabase
           .from("tests")
           .update({
@@ -158,7 +147,6 @@ const AdminTests = () => {
           description: "Test updated successfully.",
         });
       } else {
-        // Create new test
         const { error } = await supabase
           .from("tests")
           .insert({
@@ -224,6 +212,14 @@ const AdminTests = () => {
     return getExamDateLabel(dateStr);
   };
 
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-muted/30">
       {/* Header */}
@@ -232,6 +228,11 @@ const AdminTests = () => {
           <div className="flex items-center gap-4">
             <h1 className="text-xl font-bold">Admin Dashboard</h1>
             <Badge variant="secondary">Tests</Badge>
+            {adminId && (
+              <span className="text-sm text-muted-foreground">
+                Logged in as: <span className="font-medium">{adminId}</span>
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" onClick={() => navigate("/admin/upload-key")}>
@@ -277,7 +278,6 @@ const AdminTests = () => {
                 </DialogHeader>
 
                 <div className="space-y-4 py-4">
-                  {/* Test Name */}
                   <div className="space-y-2">
                     <Label htmlFor="name">Test Name</Label>
                     <Input
@@ -288,9 +288,7 @@ const AdminTests = () => {
                     />
                   </div>
 
-                  {/* Exam Date and Shift Row */}
                   <div className="grid grid-cols-2 gap-4">
-                    {/* Exam Date Dropdown */}
                     <div className="space-y-2">
                       <Label className="flex items-center gap-2">
                         <Calendar className="w-4 h-4 text-muted-foreground" />
@@ -310,7 +308,6 @@ const AdminTests = () => {
                       </Select>
                     </div>
 
-                    {/* Shift Dropdown */}
                     <div className="space-y-2">
                       <Label htmlFor="shift">Shift</Label>
                       <Select value={shift} onValueChange={setShift}>

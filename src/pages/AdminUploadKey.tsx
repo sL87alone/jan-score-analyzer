@@ -21,6 +21,7 @@ import { useToast } from "@/hooks/use-toast";
 import { EXAM_DATES, SHIFTS, getExamDateLabel } from "@/lib/examDates";
 import { BUILT_IN_KEYS, getBuiltInKeyStats } from "@/lib/builtInKeys";
 import { normalizeShift, normalizeExamDate } from "@/lib/normalize";
+import { useAdminAuth } from "@/hooks/useAdminAuth";
 
 interface ParsedKey {
   question_id: string;
@@ -63,10 +64,19 @@ const AdminUploadKey = () => {
   const [shiftError, setShiftError] = useState("");
   const [quickImporting, setQuickImporting] = useState(false);
   const [lastImportResult, setLastImportResult] = useState<ImportResult | null>(null);
+  const { isAuthenticated, adminId, logout, loading: authLoading } = useAdminAuth();
+
   useEffect(() => {
-    checkAuth();
-    fetchTests();
-  }, []);
+    if (!authLoading && !isAuthenticated) {
+      navigate("/admin");
+    }
+  }, [authLoading, isAuthenticated, navigate]);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchTests();
+    }
+  }, [isAuthenticated]);
 
   // If testId is provided in URL, set the date and shift from that test
   useEffect(() => {
@@ -81,24 +91,6 @@ const AdminUploadKey = () => {
     }
   }, [searchParams, tests]);
 
-  const checkAuth = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      navigate("/admin");
-      return;
-    }
-
-    const { data: roles } = await supabase
-      .from("user_roles")
-      .select("role")
-      .eq("user_id", user.id)
-      .eq("role", "admin")
-      .maybeSingle();
-
-    if (!roles) {
-      navigate("/admin");
-    }
-  };
 
   const fetchTests = async () => {
     const { data } = await supabase
@@ -153,7 +145,7 @@ const AdminUploadKey = () => {
   }, [selectedDate, selectedShift, tests]);
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    await logout();
     navigate("/admin");
   };
 
