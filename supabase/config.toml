@@ -1,1 +1,7 @@
 project_id = "nvinlpcdiygiedddxeih"
+
+[functions.fetch-response-sheet]
+verify_jwt = false
+
+[functions.admin-auth]
+verify_jwt = false

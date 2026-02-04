@@ -7,14 +7,13 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Zap, Loader2, AlertCircle } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
-import { useToast } from "@/hooks/use-toast";
+import { useAdminAuth } from "@/hooks/useAdminAuth";
 
 const AdminLogin = () => {
   const navigate = useNavigate();
-  const { toast } = useToast();
+  const { login, error: authError } = useAdminAuth();
   
-  const [email, setEmail] = useState("");
+  const [adminId, setAdminId] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -24,46 +23,15 @@ const AdminLogin = () => {
     setLoading(true);
     setError("");
 
-    try {
-      const { data, error: authError } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
-      if (authError) {
-        setError(authError.message);
-        return;
-      }
-
-      if (!data.user) {
-        setError("Login failed. Please try again.");
-        return;
-      }
-
-      // Check if user has admin role
-      const { data: roles, error: roleError } = await supabase
-        .from("user_roles")
-        .select("role")
-        .eq("user_id", data.user.id)
-        .eq("role", "admin")
-        .maybeSingle();
-
-      if (roleError || !roles) {
-        await supabase.auth.signOut();
-        setError("Access denied. Admin privileges required.");
-        return;
-      }
-
-      toast({
-        title: "Welcome!",
-        description: "Logged in successfully.",
-      });
+    const success = await login(adminId, password);
+    
+    if (success) {
       navigate("/admin/tests");
-    } catch (err) {
-      setError("An error occurred. Please try again.");
-    } finally {
-      setLoading(false);
+    } else {
+      setError(authError || "Invalid admin ID or password");
     }
+    
+    setLoading(false);
   };
 
   return (
@@ -90,14 +58,15 @@ const AdminLogin = () => {
           <CardContent>
             <form onSubmit={handleLogin} className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="email">Email</Label>
+                <Label htmlFor="adminId">Admin ID</Label>
                 <Input
-                  id="email"
-                  type="email"
-                  placeholder="admin@example.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  id="adminId"
+                  type="text"
+                  placeholder="admin"
+                  value={adminId}
+                  onChange={(e) => setAdminId(e.target.value)}
                   required
+                  autoComplete="username"
                 />
               </div>
               <div className="space-y-2">
@@ -109,6 +78,7 @@ const AdminLogin = () => {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
+                  autoComplete="current-password"
                 />
               </div>
 
