@@ -48,6 +48,7 @@ import autoTable from "jspdf-autotable";
 import { SectionBreakdownCard } from "@/components/report/SectionBreakdownCard";
 import { PercentileCard } from "@/components/report/PercentileCard";
 import { SubjectSectionTabs } from "@/components/report/SubjectSectionTabs";
+import { APP_NAME } from "@/lib/config";
 import {
   SectionBreakdown,
   SubjectSectionBreakdown,
@@ -301,7 +302,7 @@ const Result = () => {
     
     // Title
     doc.setFontSize(20);
-    doc.text("JanScore - JEE Main Analysis Report", 14, 22);
+    doc.text(`${APP_NAME} - JEE Main Analysis Report`, 14, 22);
     
     // Test info with exam date and shift
     doc.setFontSize(12);
@@ -371,7 +372,7 @@ const Result = () => {
       });
     }
 
-    doc.save(`janscore-report-${id?.slice(0, 8)}.pdf`);
+    doc.save(`scorex-report-${id?.slice(0, 8)}.pdf`);
     
     toast({
       title: "PDF Downloaded",
