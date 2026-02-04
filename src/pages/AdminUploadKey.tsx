@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { format } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -15,17 +14,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { Calendar } from "@/components/ui/calendar";
-import { ArrowLeft, Upload, Loader2, AlertCircle, CheckCircle, FileText, LogOut, CalendarIcon, Clock } from "lucide-react";
+import { ArrowLeft, Upload, Loader2, AlertCircle, CheckCircle, FileText, LogOut, Calendar, Clock } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Test } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
-import { cn } from "@/lib/utils";
+import { EXAM_DATES, SHIFTS } from "@/lib/examDates";
 
 interface ParsedKey {
   question_id: string;
@@ -45,8 +38,7 @@ const AdminUploadKey = () => {
 
   const [tests, setTests] = useState<Test[]>([]);
   
-  // Date and shift selection
-  const [examDates, setExamDates] = useState<string[]>([]);
+  // Date and shift selection (using hardcoded dates)
   const [selectedDate, setSelectedDate] = useState("");
   const [availableShifts, setAvailableShifts] = useState<string[]>([]);
   const [selectedShift, setSelectedShift] = useState("");
@@ -106,19 +98,19 @@ const AdminUploadKey = () => {
 
     if (data) {
       setTests(data as unknown as Test[]);
-      // Extract unique dates
-      const uniqueDates = [...new Set(data.map(t => t.exam_date).filter(Boolean))] as string[];
-      setExamDates(uniqueDates);
     }
   };
 
-  // When date changes, update available shifts
+  // When date changes, determine available shifts from DB or show both
   useEffect(() => {
     if (selectedDate) {
       const shiftsForDate = tests
         .filter(t => t.exam_date === selectedDate)
         .map(t => t.shift);
-      setAvailableShifts([...new Set(shiftsForDate)]);
+      const uniqueShifts = [...new Set(shiftsForDate)];
+      
+      // If tests exist for this date, show only available shifts; otherwise show both
+      setAvailableShifts(uniqueShifts.length > 0 ? uniqueShifts : [...SHIFTS]);
       
       // Don't reset shift if it's valid for the new date
       if (!shiftsForDate.includes(selectedShift)) {
@@ -154,12 +146,9 @@ const AdminUploadKey = () => {
     navigate("/admin");
   };
 
-  const formatExamDate = (dateStr: string) => {
-    try {
-      return format(new Date(dateStr), "d MMMM yyyy");
-    } catch {
-      return dateStr;
-    }
+  const getExamDateLabel = (isoDate: string): string => {
+    const found = EXAM_DATES.find((d) => d.value === isoDate);
+    return found?.label || isoDate;
   };
 
   const parseCSV = () => {
@@ -381,10 +370,10 @@ const AdminUploadKey = () => {
             <CardContent className="space-y-4">
               {/* Exam Date and Shift Selection */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Exam Date Dropdown */}
+                {/* Exam Date Dropdown - Hardcoded Options */}
                 <div className="space-y-2">
                   <Label htmlFor="exam-date" className="flex items-center gap-2">
-                    <CalendarIcon className="w-4 h-4 text-muted-foreground" />
+                    <Calendar className="w-4 h-4 text-muted-foreground" />
                     Exam Date
                   </Label>
                   <Select value={selectedDate} onValueChange={(value) => {
@@ -395,17 +384,11 @@ const AdminUploadKey = () => {
                       <SelectValue placeholder="Select exam date" />
                     </SelectTrigger>
                     <SelectContent>
-                      {examDates.length === 0 ? (
-                        <SelectItem value="none" disabled>
-                          No exam dates available
+                      {EXAM_DATES.map((date) => (
+                        <SelectItem key={date.value} value={date.value}>
+                          {date.label}
                         </SelectItem>
-                      ) : (
-                        examDates.map((date) => (
-                          <SelectItem key={date} value={date}>
-                            {formatExamDate(date)}
-                          </SelectItem>
-                        ))
-                      )}
+                      ))}
                     </SelectContent>
                   </Select>
                   {dateError && (
