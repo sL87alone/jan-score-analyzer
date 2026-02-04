@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { decode as base64Decode } from "https://deno.land/std@0.208.0/encoding/base64.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -33,6 +34,61 @@ function getExamDateLabel(isoDate: string): string {
   });
 }
 
+// Verify admin token with HMAC-SHA256 signature
+async function verifyAdminToken(token: string): Promise<{ valid: boolean; adminId?: string; error?: string }> {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) {
+      return { valid: false, error: "Invalid token format" };
+    }
+    
+    const [header, body, sig] = parts;
+    const secret = Deno.env.get('ADMIN_PASSWORD');
+    
+    if (!secret) {
+      console.error('[admin-seed-tests] ADMIN_PASSWORD not configured');
+      return { valid: false, error: "Server configuration error" };
+    }
+    
+    // Verify HMAC-SHA256 signature
+    const encoder = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      'raw',
+      encoder.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+    
+    const sigBytes = base64Decode(sig);
+    const signatureValid = await crypto.subtle.verify(
+      'HMAC',
+      key,
+      new Uint8Array(sigBytes).buffer,
+      encoder.encode(`${header}.${body}`)
+    );
+    
+    if (!signatureValid) {
+      console.log('[admin-seed-tests] Invalid token signature');
+      return { valid: false, error: "Invalid token signature" };
+    }
+    
+    // Decode and check payload
+    const payload = JSON.parse(new TextDecoder().decode(base64Decode(body)));
+    
+    // Check expiration
+    if (Date.now() > payload.exp) {
+      console.log('[admin-seed-tests] Token expired');
+      return { valid: false, error: "Token expired" };
+    }
+    
+    return { valid: true, adminId: payload.adminId };
+  } catch (e) {
+    console.error('[admin-seed-tests] Token verification error:', e);
+    return { valid: false, error: "Token verification failed" };
+  }
+}
+
 Deno.serve(async (req) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
@@ -48,34 +104,18 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Verify admin token
+    // Verify admin token with HMAC signature
     const token = authHeader.replace("Bearer ", "");
-    const ADMIN_PASSWORD = Deno.env.get("ADMIN_PASSWORD");
+    const tokenResult = await verifyAdminToken(token);
     
-    if (!ADMIN_PASSWORD) {
+    if (!tokenResult.valid) {
       return new Response(
-        JSON.stringify({ error: "Server configuration error" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // Verify token signature (simplified check - in production use proper JWT validation)
-    const [header, body, signature] = token.split(".");
-    if (!header || !body || !signature) {
-      return new Response(
-        JSON.stringify({ error: "Invalid token format" }),
+        JSON.stringify({ error: tokenResult.error || "Invalid token" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
-
-    // Decode and check expiry
-    const payload = JSON.parse(atob(body));
-    if (payload.exp < Date.now()) {
-      return new Response(
-        JSON.stringify({ error: "Token expired" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
+    
+    console.log(`[admin-seed-tests] Authenticated admin: ${tokenResult.adminId}`);
 
     // Create Supabase client with service role key (bypasses RLS)
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
