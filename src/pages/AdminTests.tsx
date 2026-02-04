@@ -88,11 +88,12 @@ const AdminTests = () => {
     }
   }, [isAuthenticated]);
 
-  // Check for refresh signal from upload page
+  // Check for refresh signal from upload page - with dependency on fetchTestsWithKeyCounts
   useEffect(() => {
     const handleStorageChange = () => {
       const refreshNeeded = localStorage.getItem("tests_refresh_needed");
       if (refreshNeeded) {
+        console.log("Refresh signal detected, refetching tests...");
         localStorage.removeItem("tests_refresh_needed");
         fetchTestsWithKeyCounts();
       }
@@ -101,16 +102,24 @@ const AdminTests = () => {
     // Check on mount
     handleStorageChange();
 
-    // Listen for storage events (from other tabs or same-page localStorage changes)
+    // Listen for storage events (from other tabs)
     window.addEventListener("storage", handleStorageChange);
     
-    // Also check on focus (for same-tab navigation)
-    const handleFocus = () => handleStorageChange();
-    window.addEventListener("focus", handleFocus);
+    // Also check on focus (for same-tab navigation) 
+    window.addEventListener("focus", handleStorageChange);
+    
+    // Also listen for visibilitychange for more reliable detection
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        handleStorageChange();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
     
     return () => {
       window.removeEventListener("storage", handleStorageChange);
-      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("focus", handleStorageChange);
+      document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, []);
 
@@ -493,6 +502,15 @@ const AdminTests = () => {
               <p className="text-muted-foreground">Create and manage exam tests/shifts</p>
             </div>
             <div className="flex items-center gap-2">
+              <Button 
+                variant="ghost" 
+                size="sm"
+                onClick={() => fetchTestsWithKeyCounts()}
+                disabled={loading}
+              >
+                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Database className="w-4 h-4" />}
+                <span className="ml-2">Refresh</span>
+              </Button>
               <Button 
                 variant="outline" 
                 onClick={handleSeedTests}
