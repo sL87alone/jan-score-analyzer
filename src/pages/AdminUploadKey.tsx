@@ -167,48 +167,15 @@ const AdminUploadKey = () => {
     console.log("Quick import starting:", { normalizedDate, normalizedShift });
 
     try {
-      // 1. Upsert the test
-      const { data: existingTest } = await supabase
-        .from("tests")
-        .select("id")
-        .eq("exam_date", normalizedDate)
-        .eq("shift", normalizedShift)
-        .maybeSingle();
-
-      let testId: string;
-
-      if (existingTest) {
-        testId = existingTest.id;
-        console.log("Found existing test:", testId);
-      } else {
-        // Create new test with default marking rules
-        const { data: newTest, error: testError } = await supabase
-          .from("tests")
-          .insert({
-            name: `JEE Main - ${getExamDateLabel(normalizedDate)} ${normalizedShift}`,
-            exam_date: normalizedDate,
-            shift: normalizedShift,
-            is_active: true,
-            marking_rules_json: {
-              mcq_single: { correct: 4, wrong: -1, unattempted: 0 },
-              numerical: { correct: 4, wrong: -1, unattempted: 0 },
-              msq: { correct: 4, wrong: -2, unattempted: 0 },
-            },
-          })
-          .select("id")
-          .single();
-
-        if (testError) {
-          console.error("Error creating test:", testError);
-          throw testError;
-        }
-        testId = newTest.id;
-        console.log("Created new test:", testId);
+      // Get admin session token
+      const stored = localStorage.getItem("admin_session");
+      if (!stored) {
+        throw new Error("Admin session not found. Please log in again.");
       }
+      const { sessionToken } = JSON.parse(stored);
 
-      // 2. Prepare answer keys for upsert
-      const keysToUpsert = keySet.keys.map((key) => ({
-        test_id: testId,
+      // Prepare keys for the edge function
+      const keysPayload = keySet.keys.map((key) => ({
         question_id: key.question_id,
         subject: key.subject,
         question_type: key.type,
@@ -219,52 +186,45 @@ const AdminUploadKey = () => {
         is_bonus: false,
       }));
 
-      console.log("Upserting", keysToUpsert.length, "answer keys");
+      // Call the edge function
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/upload-answer-keys`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${sessionToken}`,
+            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+          },
+          body: JSON.stringify({
+            exam_date: normalizedDate,
+            shift: normalizedShift,
+            keys: keysPayload,
+          }),
+        }
+      );
 
-      // 3. Upsert answer keys
-      const { error: upsertError } = await supabase
-        .from("answer_keys")
-        .upsert(keysToUpsert, { onConflict: "test_id,question_id" });
+      const result = await response.json();
 
-      if (upsertError) {
-        console.error("Error upserting keys:", upsertError);
-        throw upsertError;
+      if (!response.ok) {
+        throw new Error(result.error || "Upload failed");
       }
 
-      // 4. Verify the import by counting rows
-      const { data: verifyData, error: verifyError } = await supabase
-        .from("answer_keys")
-        .select("subject")
-        .eq("test_id", testId);
-
-      if (verifyError) {
-        console.error("Error verifying import:", verifyError);
-      }
-
-      const keyCount = verifyData?.length || 0;
-      const mathCount = verifyData?.filter(k => k.subject === "Mathematics").length || 0;
-      const physicsCount = verifyData?.filter(k => k.subject === "Physics").length || 0;
-      const chemistryCount = verifyData?.filter(k => k.subject === "Chemistry").length || 0;
-
-      console.log("Import verified:", { keyCount, mathCount, physicsCount, chemistryCount });
+      console.log("Import result:", result);
 
       // Store result for display
       setLastImportResult({
-        testId,
-        keyCount,
-        mathCount,
-        physicsCount,
-        chemistryCount,
+        testId: result.testId,
+        keyCount: result.totalKeys,
+        mathCount: result.breakdown.mathematics,
+        physicsCount: result.breakdown.physics,
+        chemistryCount: result.breakdown.chemistry,
       });
 
-      if (keyCount === 0) {
-        setError("Import appeared to succeed but verification found 0 answer keys. Check database permissions.");
-      } else {
-        toast({
-          title: "Import Successful!",
-          description: `Verified ${keyCount} answer keys in database. Math: ${mathCount}, Physics: ${physicsCount}, Chemistry: ${chemistryCount}`,
-        });
-      }
+      toast({
+        title: "Import Successful!",
+        description: `Verified ${result.totalKeys} answer keys. Math: ${result.breakdown.mathematics}, Physics: ${result.breakdown.physics}, Chemistry: ${result.breakdown.chemistry}`,
+      });
 
       // Refresh tests list
       fetchTests();
@@ -396,89 +356,57 @@ const AdminUploadKey = () => {
         throw new Error("Invalid date or shift format");
       }
 
-      // 1. Upsert the test (create if missing)
-      let testId = selectedTestId;
-
-      if (!testId) {
-        // Check if test exists
-        const { data: existingTest, error: checkError } = await supabase
-          .from("tests")
-          .select("id")
-          .eq("exam_date", normalizedDate)
-          .eq("shift", normalizedShift)
-          .maybeSingle();
-
-        if (checkError) {
-          console.error("Error checking test:", checkError);
-          throw new Error("Failed to check for existing test");
-        }
-
-        if (existingTest) {
-          testId = existingTest.id;
-        } else {
-          // Create new test
-          const { data: newTest, error: createError } = await supabase
-            .from("tests")
-            .insert({
-              name: `JEE Main - ${getExamDateLabel(normalizedDate)} ${normalizedShift}`,
-              exam_date: normalizedDate,
-              shift: normalizedShift,
-              is_active: true,
-              marking_rules_json: {
-                mcq_single: { correct: 4, wrong: -1, unattempted: 0 },
-                numerical: { correct: 4, wrong: -1, unattempted: 0 },
-                msq: { correct: 4, wrong: -2, unattempted: 0 },
-              },
-            })
-            .select("id")
-            .single();
-
-          if (createError) {
-            console.error("Error creating test:", createError);
-            toast({
-              title: "Failed to create test",
-              description: createError.message,
-              variant: "destructive",
-            });
-            throw new Error(`Failed to create test: ${createError.message}`);
-          }
-
-          testId = newTest.id;
-          console.log("Created new test:", testId);
-        }
+      // Get admin session token
+      const stored = localStorage.getItem("admin_session");
+      if (!stored) {
+        throw new Error("Admin session not found. Please log in again.");
       }
+      const { sessionToken } = JSON.parse(stored);
 
-      // 2. Delete existing answer keys for this test
-      await supabase.from("answer_keys").delete().eq("test_id", testId);
-
-      // 3. Insert new answer keys
-      const keysToInsert = parsedKeys.map((key) => ({
-        test_id: testId,
-        ...key,
+      // Prepare keys for the edge function
+      const keysPayload = parsedKeys.map((key) => ({
+        question_id: key.question_id,
+        subject: key.subject,
+        question_type: key.question_type,
+        correct_option_ids: key.correct_option_ids,
+        correct_numeric_value: key.correct_numeric_value,
+        numeric_tolerance: key.numeric_tolerance,
+        is_cancelled: key.is_cancelled,
+        is_bonus: key.is_bonus,
       }));
 
-      const { error: insertError } = await supabase.from("answer_keys").insert(keysToInsert);
+      // Call the edge function
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/upload-answer-keys`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${sessionToken}`,
+            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+          },
+          body: JSON.stringify({
+            exam_date: normalizedDate,
+            shift: normalizedShift,
+            keys: keysPayload,
+          }),
+        }
+      );
 
-      if (insertError) {
+      const result = await response.json();
+
+      if (!response.ok) {
         toast({
-          title: "Failed to insert answer keys",
-          description: insertError.message,
+          title: "Upload Failed",
+          description: result.error || "Unknown error occurred",
           variant: "destructive",
         });
-        throw insertError;
+        throw new Error(result.error || "Upload failed");
       }
-
-      // 4. Verify the import
-      const { data: verifyData } = await supabase
-        .from("answer_keys")
-        .select("subject")
-        .eq("test_id", testId);
-
-      const keyCount = verifyData?.length || 0;
 
       toast({
         title: "Success!",
-        description: `Uploaded ${keyCount} answer keys`,
+        description: `Uploaded ${result.upsertedCount} keys. Total: ${result.totalKeys} (M:${result.breakdown.mathematics} P:${result.breakdown.physics} C:${result.breakdown.chemistry})`,
       });
 
       // Reset form
