@@ -1,10 +1,66 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { decode as base64Decode } from "https://deno.land/std@0.208.0/encoding/base64.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type",
 };
+
+// Verify admin token with HMAC-SHA256 signature
+async function verifyAdminToken(token: string): Promise<{ valid: boolean; adminId?: string; error?: string }> {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) {
+      return { valid: false, error: "Invalid token format" };
+    }
+    
+    const [header, body, sig] = parts;
+    const secret = Deno.env.get('ADMIN_PASSWORD');
+    
+    if (!secret) {
+      console.error('[upload-answer-keys] ADMIN_PASSWORD not configured');
+      return { valid: false, error: "Server configuration error" };
+    }
+    
+    // Verify HMAC-SHA256 signature
+    const encoder = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      'raw',
+      encoder.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+    
+    const sigBytes = base64Decode(sig);
+    const signatureValid = await crypto.subtle.verify(
+      'HMAC',
+      key,
+      new Uint8Array(sigBytes).buffer,
+      encoder.encode(`${header}.${body}`)
+    );
+    
+    if (!signatureValid) {
+      console.log('[upload-answer-keys] Invalid token signature');
+      return { valid: false, error: "Invalid token signature" };
+    }
+    
+    // Decode and check payload
+    const payload = JSON.parse(new TextDecoder().decode(base64Decode(body)));
+    
+    // Check expiration
+    if (Date.now() > payload.exp) {
+      console.log('[upload-answer-keys] Token expired');
+      return { valid: false, error: "Token expired" };
+    }
+    
+    return { valid: true, adminId: payload.adminId };
+  } catch (e) {
+    console.error('[upload-answer-keys] Token verification error:', e);
+    return { valid: false, error: "Token verification failed" };
+  }
+}
 
 interface AnswerKeyRow {
   question_id: string;
@@ -42,29 +98,16 @@ Deno.serve(async (req) => {
 
     const token = authHeader.replace("Bearer ", "");
     
-    // Verify token format and expiry
-    const tokenParts = token.split(".");
-    if (tokenParts.length !== 3) {
+    // Verify token with HMAC signature
+    const tokenResult = await verifyAdminToken(token);
+    if (!tokenResult.valid) {
       return new Response(
-        JSON.stringify({ error: "Invalid token format" }),
+        JSON.stringify({ error: tokenResult.error || "Invalid token" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
-
-    try {
-      const payload = JSON.parse(atob(tokenParts[1]));
-      if (payload.exp < Date.now()) {
-        return new Response(
-          JSON.stringify({ error: "Token expired" }),
-          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-    } catch {
-      return new Response(
-        JSON.stringify({ error: "Invalid token" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
+    
+    console.log(`[upload-answer-keys] Authenticated admin: ${tokenResult.adminId}`);
 
     // Parse request body
     const body: RequestBody = await req.json();
