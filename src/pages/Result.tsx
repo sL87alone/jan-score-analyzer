@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
+import { format } from "date-fns";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/landing/Footer";
 import { Button } from "@/components/ui/button";
@@ -38,6 +39,8 @@ import {
   TrendingUp,
   TrendingDown,
   Loader2,
+  Calendar,
+  Clock,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Submission, Response as ResponseType, Test, SubjectStats } from "@/lib/types";
@@ -165,10 +168,18 @@ const Result = () => {
     doc.setFontSize(20);
     doc.text("JanScore - JEE Main Analysis Report", 14, 22);
     
-    // Test info
+    // Test info with exam date and shift
     doc.setFontSize(12);
-    doc.text(`Test: ${test?.name || "N/A"} - ${test?.shift || ""}`, 14, 35);
-    doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 42);
+    if (test?.exam_date) {
+      const formattedDate = format(new Date(test.exam_date), "d MMMM yyyy");
+      doc.text(`Exam Date: ${formattedDate}`, 14, 35);
+      doc.text(`Shift: ${test.shift}`, 100, 35);
+      doc.text(`Test: ${test?.name || "N/A"}`, 14, 42);
+      doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 49);
+    } else {
+      doc.text(`Test: ${test?.name || "N/A"} - ${test?.shift || ""}`, 14, 35);
+      doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 42);
+    }
 
     // Score summary
     doc.setFontSize(16);
@@ -310,12 +321,28 @@ const Result = () => {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5 }}
           >
+            {/* Exam Info Banner */}
+            {test && test.exam_date && (
+              <div className="flex flex-wrap items-center gap-4 mb-6 p-4 rounded-lg bg-muted/50 border">
+                <div className="flex items-center gap-2">
+                  <Calendar className="w-4 h-4 text-primary" />
+                  <span className="text-sm font-medium">Exam Date:</span>
+                  <span className="text-sm">{format(new Date(test.exam_date), "d MMMM yyyy")}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-primary" />
+                  <span className="text-sm font-medium">Shift:</span>
+                  <span className="text-sm">{test.shift}</span>
+                </div>
+              </div>
+            )}
+
             {/* Header */}
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-8">
               <div>
                 <h1 className="text-2xl md:text-3xl font-bold">Your Score Report</h1>
                 <p className="text-muted-foreground">
-                  {test ? `${test.name} – ${test.shift}` : "Score Analysis"}
+                  {test ? `${test.name}` : "Score Analysis"}
                 </p>
               </div>
               <div className="flex gap-2">

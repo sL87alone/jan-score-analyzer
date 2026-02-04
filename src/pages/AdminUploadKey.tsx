@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
+import { format } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,10 +15,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ArrowLeft, Upload, Loader2, AlertCircle, CheckCircle, FileText, LogOut } from "lucide-react";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Calendar } from "@/components/ui/calendar";
+import { ArrowLeft, Upload, Loader2, AlertCircle, CheckCircle, FileText, LogOut, CalendarIcon, Clock } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Test } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
+import { cn } from "@/lib/utils";
 
 interface ParsedKey {
   question_id: string;
@@ -36,17 +44,39 @@ const AdminUploadKey = () => {
   const { toast } = useToast();
 
   const [tests, setTests] = useState<Test[]>([]);
+  
+  // Date and shift selection
+  const [examDates, setExamDates] = useState<string[]>([]);
+  const [selectedDate, setSelectedDate] = useState("");
+  const [availableShifts, setAvailableShifts] = useState<string[]>([]);
+  const [selectedShift, setSelectedShift] = useState("");
   const [selectedTestId, setSelectedTestId] = useState(searchParams.get("testId") || "");
+  
   const [csvContent, setCsvContent] = useState("");
   const [loading, setLoading] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [parsedKeys, setParsedKeys] = useState<ParsedKey[]>([]);
   const [error, setError] = useState("");
+  const [dateError, setDateError] = useState("");
+  const [shiftError, setShiftError] = useState("");
 
   useEffect(() => {
     checkAuth();
     fetchTests();
   }, []);
+
+  // If testId is provided in URL, set the date and shift from that test
+  useEffect(() => {
+    const testIdFromUrl = searchParams.get("testId");
+    if (testIdFromUrl && tests.length > 0) {
+      const test = tests.find(t => t.id === testIdFromUrl);
+      if (test && test.exam_date) {
+        setSelectedDate(test.exam_date);
+        setSelectedShift(test.shift);
+        setSelectedTestId(test.id);
+      }
+    }
+  }, [searchParams, tests]);
 
   const checkAuth = async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -71,16 +101,65 @@ const AdminUploadKey = () => {
     const { data } = await supabase
       .from("tests")
       .select("*")
-      .order("created_at", { ascending: false });
+      .not("exam_date", "is", null)
+      .order("exam_date", { ascending: false });
 
     if (data) {
       setTests(data as unknown as Test[]);
+      // Extract unique dates
+      const uniqueDates = [...new Set(data.map(t => t.exam_date).filter(Boolean))] as string[];
+      setExamDates(uniqueDates);
     }
   };
+
+  // When date changes, update available shifts
+  useEffect(() => {
+    if (selectedDate) {
+      const shiftsForDate = tests
+        .filter(t => t.exam_date === selectedDate)
+        .map(t => t.shift);
+      setAvailableShifts([...new Set(shiftsForDate)]);
+      
+      // Don't reset shift if it's valid for the new date
+      if (!shiftsForDate.includes(selectedShift)) {
+        setSelectedShift("");
+        setSelectedTestId("");
+      }
+      setShiftError("");
+    } else {
+      setAvailableShifts([]);
+      setSelectedShift("");
+      setSelectedTestId("");
+    }
+  }, [selectedDate, tests]);
+
+  // When shift changes, resolve test_id
+  useEffect(() => {
+    if (selectedDate && selectedShift) {
+      const matchingTest = tests.find(
+        t => t.exam_date === selectedDate && t.shift === selectedShift
+      );
+      if (matchingTest) {
+        setSelectedTestId(matchingTest.id);
+      } else {
+        setSelectedTestId("");
+      }
+    } else {
+      setSelectedTestId("");
+    }
+  }, [selectedDate, selectedShift, tests]);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
     navigate("/admin");
+  };
+
+  const formatExamDate = (dateStr: string) => {
+    try {
+      return format(new Date(dateStr), "d MMMM yyyy");
+    } catch {
+      return dateStr;
+    }
   };
 
   const parseCSV = () => {
@@ -119,7 +198,6 @@ const AdminUploadKey = () => {
         const isBonus = parts[5]?.toLowerCase() === "true" || parts[5] === "1";
 
         // Validate question type
-        const validTypes = ["mcq_single", "msq", "numerical"];
         const normalizedType = questionType.includes("numerical") ? "numerical" :
                               questionType.includes("msq") || questionType.includes("multi") ? "msq" :
                               "mcq_single";
@@ -173,9 +251,28 @@ const AdminUploadKey = () => {
     }
   };
 
-  const handleUpload = async () => {
+  const validateSelection = (): boolean => {
+    let valid = true;
+    setDateError("");
+    setShiftError("");
+
+    if (!selectedDate) {
+      setDateError("Please select an exam date.");
+      valid = false;
+    }
+    if (!selectedShift) {
+      setShiftError("Please select a shift.");
+      valid = false;
+    }
     if (!selectedTestId) {
-      setError("Please select a test");
+      setError("No test found for the selected date and shift.");
+      valid = false;
+    }
+    return valid;
+  };
+
+  const handleUpload = async () => {
+    if (!validateSelection()) {
       return;
     }
 
@@ -282,21 +379,78 @@ const AdminUploadKey = () => {
               <CardTitle>Upload Answer Key</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              {/* Test Selection */}
-              <div className="space-y-2">
-                <Label htmlFor="test">Select Test</Label>
-                <Select value={selectedTestId} onValueChange={setSelectedTestId}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a test..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {tests.map((test) => (
-                      <SelectItem key={test.id} value={test.id}>
-                        {test.name} – {test.shift}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              {/* Exam Date and Shift Selection */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Exam Date Dropdown */}
+                <div className="space-y-2">
+                  <Label htmlFor="exam-date" className="flex items-center gap-2">
+                    <CalendarIcon className="w-4 h-4 text-muted-foreground" />
+                    Exam Date
+                  </Label>
+                  <Select value={selectedDate} onValueChange={(value) => {
+                    setSelectedDate(value);
+                    setDateError("");
+                  }}>
+                    <SelectTrigger id="exam-date" className={dateError ? "border-destructive" : ""}>
+                      <SelectValue placeholder="Select exam date" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {examDates.length === 0 ? (
+                        <SelectItem value="none" disabled>
+                          No exam dates available
+                        </SelectItem>
+                      ) : (
+                        examDates.map((date) => (
+                          <SelectItem key={date} value={date}>
+                            {formatExamDate(date)}
+                          </SelectItem>
+                        ))
+                      )}
+                    </SelectContent>
+                  </Select>
+                  {dateError && (
+                    <p className="text-xs text-destructive">{dateError}</p>
+                  )}
+                </div>
+
+                {/* Shift Dropdown */}
+                <div className="space-y-2">
+                  <Label htmlFor="shift" className="flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-muted-foreground" />
+                    Shift
+                  </Label>
+                  <Select 
+                    value={selectedShift} 
+                    onValueChange={(value) => {
+                      setSelectedShift(value);
+                      setShiftError("");
+                    }}
+                    disabled={!selectedDate}
+                  >
+                    <SelectTrigger id="shift" className={shiftError ? "border-destructive" : ""}>
+                      <SelectValue placeholder="Select shift" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableShifts.length === 0 ? (
+                        <SelectItem value="none" disabled>
+                          No shifts available
+                        </SelectItem>
+                      ) : (
+                        availableShifts.map((shift) => (
+                          <SelectItem key={shift} value={shift}>
+                            {shift}
+                          </SelectItem>
+                        ))
+                      )}
+                    </SelectContent>
+                  </Select>
+                  {!selectedDate && !shiftError && (
+                    <p className="text-xs text-muted-foreground">Select an exam date first</p>
+                  )}
+                  {shiftError && (
+                    <p className="text-xs text-destructive">{shiftError}</p>
+                  )}
+                </div>
               </div>
 
               {/* File Upload */}
@@ -369,7 +523,7 @@ const AdminUploadKey = () => {
                 </Button>
                 <Button
                   onClick={handleUpload}
-                  disabled={loading || parsedKeys.length === 0}
+                  disabled={loading || parsedKeys.length === 0 || !selectedTestId}
                   className="flex-1"
                 >
                   {loading ? (
