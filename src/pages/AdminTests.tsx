@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { format } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -31,18 +30,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { Calendar } from "@/components/ui/calendar";
 import { Switch } from "@/components/ui/switch";
-import { Plus, Pencil, Trash2, LogOut, Loader2, Upload, CalendarIcon } from "lucide-react";
+import { Plus, Pencil, Trash2, LogOut, Loader2, Upload, Calendar } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Test, MarkingRules } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
-import { cn } from "@/lib/utils";
+import { EXAM_DATES, SHIFTS, getExamDateLabel } from "@/lib/examDates";
 
 const defaultMarkingRules: MarkingRules = {
   mcq_single: { correct: 4, wrong: -1, unattempted: 0 },
@@ -63,7 +56,7 @@ const AdminTests = () => {
   // Form state
   const [name, setName] = useState("");
   const [shift, setShift] = useState("");
-  const [examDate, setExamDate] = useState<Date | undefined>(undefined);
+  const [examDate, setExamDate] = useState(""); // ISO date string
   const [markingRules, setMarkingRules] = useState<MarkingRules>(defaultMarkingRules);
   const [isActive, setIsActive] = useState(true);
 
@@ -114,7 +107,7 @@ const AdminTests = () => {
   const resetForm = () => {
     setName("");
     setShift("");
-    setExamDate(undefined);
+    setExamDate("");
     setMarkingRules(defaultMarkingRules);
     setIsActive(true);
     setEditingTest(null);
@@ -124,7 +117,7 @@ const AdminTests = () => {
     setEditingTest(test);
     setName(test.name);
     setShift(test.shift);
-    setExamDate(test.exam_date ? new Date(test.exam_date) : undefined);
+    setExamDate(test.exam_date || "");
     setMarkingRules(test.marking_rules_json);
     setIsActive(test.is_active);
     setDialogOpen(true);
@@ -143,7 +136,7 @@ const AdminTests = () => {
     setCreating(true);
 
     try {
-      const examDateStr = format(examDate, "yyyy-MM-dd");
+      const examDateStr = examDate; // Already in ISO format
 
       if (editingTest) {
         // Update existing test
@@ -228,11 +221,7 @@ const AdminTests = () => {
 
   const formatExamDate = (dateStr: string | undefined) => {
     if (!dateStr) return "-";
-    try {
-      return format(new Date(dateStr), "d MMMM yyyy");
-    } catch {
-      return dateStr;
-    }
+    return getExamDateLabel(dateStr);
   };
 
   return (
@@ -301,32 +290,24 @@ const AdminTests = () => {
 
                   {/* Exam Date and Shift Row */}
                   <div className="grid grid-cols-2 gap-4">
-                    {/* Exam Date Picker */}
+                    {/* Exam Date Dropdown */}
                     <div className="space-y-2">
-                      <Label>Exam Date</Label>
-                      <Popover>
-                        <PopoverTrigger asChild>
-                          <Button
-                            variant="outline"
-                            className={cn(
-                              "w-full justify-start text-left font-normal",
-                              !examDate && "text-muted-foreground"
-                            )}
-                          >
-                            <CalendarIcon className="mr-2 h-4 w-4" />
-                            {examDate ? format(examDate, "d MMM yyyy") : <span>Pick a date</span>}
-                          </Button>
-                        </PopoverTrigger>
-                        <PopoverContent className="w-auto p-0" align="start">
-                          <Calendar
-                            mode="single"
-                            selected={examDate}
-                            onSelect={setExamDate}
-                            initialFocus
-                            className="p-3 pointer-events-auto"
-                          />
-                        </PopoverContent>
-                      </Popover>
+                      <Label className="flex items-center gap-2">
+                        <Calendar className="w-4 h-4 text-muted-foreground" />
+                        Exam Date
+                      </Label>
+                      <Select value={examDate} onValueChange={setExamDate}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select exam date" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {EXAM_DATES.map((date) => (
+                            <SelectItem key={date.value} value={date.value}>
+                              {date.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
 
                     {/* Shift Dropdown */}
@@ -337,8 +318,11 @@ const AdminTests = () => {
                           <SelectValue placeholder="Select shift" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="Shift 1">Shift 1</SelectItem>
-                          <SelectItem value="Shift 2">Shift 2</SelectItem>
+                          {SHIFTS.map((s) => (
+                            <SelectItem key={s} value={s}>
+                              {s}
+                            </SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
                     </div>
