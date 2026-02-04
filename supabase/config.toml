@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.admin-auth]
 verify_jwt = false
+
+[functions.admin-seed-tests]
+verify_jwt = false

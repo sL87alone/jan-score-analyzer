@@ -84,13 +84,73 @@ const AdminTests = () => {
 
   useEffect(() => {
     if (isAuthenticated) {
-      fetchTestsWithKeyCounts();
+      initializeTests();
     }
   }, [isAuthenticated]);
 
-  const fetchTestsWithKeyCounts = async () => {
+  // Initialize tests - auto-seed if empty, then fetch
+  const initializeTests = async () => {
     setLoading(true);
     
+    // First check if any tests exist
+    const { data: existingTests, error: checkError } = await supabase
+      .from("tests")
+      .select("id")
+      .limit(1);
+
+    if (checkError) {
+      console.error("Error checking tests:", checkError);
+      setLoading(false);
+      return;
+    }
+
+    // If no tests exist, auto-seed silently
+    if (!existingTests || existingTests.length === 0) {
+      console.log("No tests found, auto-seeding Jan 2026 tests...");
+      // Get session token for auto-seed
+      const stored = localStorage.getItem("admin_session");
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored);
+          await autoSeedTests(parsed.sessionToken);
+        } catch {
+          console.error("Failed to parse session for auto-seed");
+        }
+      }
+    }
+
+    // Now fetch all tests with key counts
+    await fetchTestsWithKeyCounts();
+  };
+
+  // Silent auto-seed via edge function
+  const autoSeedTests = async (token: string) => {
+    try {
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-seed-tests`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+          },
+        }
+      );
+
+      if (!response.ok) {
+        const result = await response.json();
+        console.error("Auto-seed failed:", result.error);
+      } else {
+        const result = await response.json();
+        console.log("Auto-seeded:", result);
+      }
+    } catch (err) {
+      console.error("Auto-seed error:", err);
+    }
+  };
+
+  const fetchTestsWithKeyCounts = async () => {
     // Fetch all tests
     const { data: testsData, error: testsError } = await supabase
       .from("tests")
@@ -138,59 +198,61 @@ const AdminTests = () => {
   };
 
   const handleSeedTests = async () => {
+    const token = localStorage.getItem("admin_session");
+    if (!token) {
+      toast({
+        title: "Error",
+        description: "Not authenticated. Please log in again.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    let sessionToken = "";
+    try {
+      const parsed = JSON.parse(token);
+      sessionToken = parsed.sessionToken;
+    } catch {
+      toast({
+        title: "Error",
+        description: "Invalid session. Please log in again.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setSeeding(true);
-    let created = 0;
-    let skipped = 0;
 
     try {
-      for (const date of JAN_2026_DATES) {
-        for (const shiftName of SHIFTS) {
-          const testName = `JEE Main - ${getExamDateLabel(date)} ${shiftName}`;
-          
-          // Check if test exists first
-          const { data: existing } = await supabase
-            .from("tests")
-            .select("id")
-            .eq("exam_date", date)
-            .eq("shift", shiftName)
-            .maybeSingle();
-
-          if (existing) {
-            skipped++;
-            continue;
-          }
-
-          // Insert new test
-          const { error } = await supabase
-            .from("tests")
-            .insert({
-              name: testName,
-              exam_date: date,
-              shift: shiftName,
-              is_active: true,
-              marking_rules_json: JSON.parse(JSON.stringify(defaultMarkingRules)),
-            });
-
-          if (error) {
-            console.error("Error seeding test:", error);
-            skipped++;
-          } else {
-            created++;
-          }
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-seed-tests`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${sessionToken}`,
+            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+          },
         }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to seed tests");
       }
 
       toast({
         title: "Tests Seeded",
-        description: `Created ${created} tests, ${skipped} already existed.`,
+        description: `Created ${result.created} tests, ${result.skipped} already existed.`,
       });
 
-      fetchTestsWithKeyCounts();
+      await fetchTestsWithKeyCounts();
     } catch (err) {
       console.error("Seeding error:", err);
       toast({
         title: "Error",
-        description: "Failed to seed tests.",
+        description: err instanceof Error ? err.message : "Failed to seed tests.",
         variant: "destructive",
       });
     } finally {
@@ -321,13 +383,31 @@ const AdminTests = () => {
 
   const getKeyCountBadge = (count: number) => {
     if (count >= 75) {
-      return <Badge className="bg-emerald-600 text-primary-foreground hover:bg-emerald-700">{count} keys</Badge>;
+      return <Badge variant="default">{count} keys</Badge>;
     } else if (count > 0) {
-      return <Badge className="bg-amber-500 text-primary-foreground hover:bg-amber-600">{count} keys</Badge>;
+      return <Badge variant="secondary">{count} keys</Badge>;
     } else {
       return <Badge variant="destructive">No keys</Badge>;
     }
   };
+
+  const getKeyStatusBadge = (count: number) => {
+    if (count >= 75) {
+      return <Badge variant="outline" className="border-primary text-primary">Uploaded</Badge>;
+    } else if (count > 0) {
+      return <Badge variant="outline" className="border-muted-foreground">Partial</Badge>;
+    } else {
+      return <Badge variant="outline" className="border-destructive text-destructive">Not uploaded</Badge>;
+    }
+  };
+
+  // Group tests by exam date for better display
+  const groupedTests = tests.reduce((acc, test) => {
+    const date = test.exam_date || "Unknown";
+    if (!acc[date]) acc[date] = [];
+    acc[date].push(test);
+    return acc;
+  }, {} as Record<string, TestWithKeyCount[]>);
 
   if (authLoading) {
     return (
@@ -555,67 +635,90 @@ const AdminTests = () => {
                   </div>
                 </div>
               ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Exam Date</TableHead>
-                      <TableHead>Shift</TableHead>
-                      <TableHead>Key Count</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Last Updated</TableHead>
-                      <TableHead className="text-right">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {tests.map((test) => (
-                      <TableRow key={test.id}>
-                        <TableCell className="font-medium">
-                          {formatExamDate(test.exam_date)}
-                        </TableCell>
-                        <TableCell>{test.shift}</TableCell>
-                        <TableCell>
-                          {getKeyCountBadge(test.key_count || 0)}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={test.is_active ? "default" : "secondary"}>
-                            {test.is_active ? "Active" : "Inactive"}
+                <div className="divide-y">
+                  {Object.entries(groupedTests)
+                    .sort(([a], [b]) => a.localeCompare(b))
+                    .map(([date, dateTests]) => (
+                    <div key={date}>
+                      {/* Date Header */}
+                      <div className="bg-muted/50 px-4 py-3 border-b">
+                        <div className="flex items-center gap-2">
+                          <Calendar className="w-4 h-4 text-muted-foreground" />
+                          <span className="font-semibold">{formatExamDate(date)}</span>
+                          <Badge variant="outline" className="ml-2">
+                            {dateTests.length} shifts
                           </Badge>
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-sm">
-                          {new Date(test.updated_at).toLocaleDateString()}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-1">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => navigate(`/admin/upload-key?testId=${test.id}`)}
-                              title="Upload Keys"
-                            >
-                              <Upload className="w-4 h-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => openEditDialog(test)}
-                              title="Edit"
-                            >
-                              <Pencil className="w-4 h-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => handleDelete(test.id)}
-                              title="Delete"
-                            >
-                              <Trash2 className="w-4 h-4 text-destructive" />
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                        </div>
+                      </div>
+                      {/* Shifts for this date */}
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="w-[120px]">Shift</TableHead>
+                            <TableHead className="w-[120px]">Key Count</TableHead>
+                            <TableHead className="w-[140px]">Key Status</TableHead>
+                            <TableHead className="w-[100px]">Active</TableHead>
+                            <TableHead>Last Updated</TableHead>
+                            <TableHead className="text-right">Actions</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {dateTests
+                            .sort((a, b) => a.shift.localeCompare(b.shift))
+                            .map((test) => (
+                            <TableRow key={test.id}>
+                              <TableCell className="font-medium">
+                                {test.shift}
+                              </TableCell>
+                              <TableCell>
+                                {getKeyCountBadge(test.key_count || 0)}
+                              </TableCell>
+                              <TableCell>
+                                {getKeyStatusBadge(test.key_count || 0)}
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant={test.is_active ? "default" : "secondary"}>
+                                  {test.is_active ? "Active" : "Inactive"}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-muted-foreground text-sm">
+                                {new Date(test.updated_at).toLocaleDateString()}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                <div className="flex justify-end gap-1">
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => navigate(`/admin/upload-key?testId=${test.id}`)}
+                                    title="Upload Keys"
+                                  >
+                                    <Upload className="w-4 h-4" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => openEditDialog(test)}
+                                    title="Edit"
+                                  >
+                                    <Pencil className="w-4 h-4" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => handleDelete(test.id)}
+                                    title="Delete"
+                                  >
+                                    <Trash2 className="w-4 h-4 text-destructive" />
+                                  </Button>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  ))}
+                </div>
               )}
             </CardContent>
           </Card>
