@@ -118,6 +118,7 @@ export type Database = {
           negative_marks: number | null
           physics_marks: number | null
           share_enabled: boolean
+          share_token: string | null
           source_type: string
           test_id: string | null
           total_attempted: number | null
@@ -125,6 +126,7 @@ export type Database = {
           total_marks: number | null
           total_unattempted: number | null
           total_wrong: number | null
+          user_id: string | null
         }
         Insert: {
           accuracy_percentage?: number | null
@@ -135,6 +137,7 @@ export type Database = {
           negative_marks?: number | null
           physics_marks?: number | null
           share_enabled?: boolean
+          share_token?: string | null
           source_type: string
           test_id?: string | null
           total_attempted?: number | null
@@ -142,6 +145,7 @@ export type Database = {
           total_marks?: number | null
           total_unattempted?: number | null
           total_wrong?: number | null
+          user_id?: string | null
         }
         Update: {
           accuracy_percentage?: number | null
@@ -152,6 +156,7 @@ export type Database = {
           negative_marks?: number | null
           physics_marks?: number | null
           share_enabled?: boolean
+          share_token?: string | null
           source_type?: string
           test_id?: string | null
           total_attempted?: number | null
@@ -159,6 +164,7 @@ export type Database = {
           total_marks?: number | null
           total_unattempted?: number | null
           total_wrong?: number | null
+          user_id?: string | null
         }
         Relationships: [
           {

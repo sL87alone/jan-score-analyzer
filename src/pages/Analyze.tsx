@@ -18,9 +18,8 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Upload, Link as LinkIcon, FileText, Loader2, AlertCircle, Zap, Calendar, Clock, Bug, ChevronDown, ChevronUp, CheckCircle, AlertTriangle } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
-import { parseResponseSheetHTML, validateResponseSheet, getParsingDiagnostic, getDigialmDebugInfo, ParserDebugInfo, matchResponsesWithKeys, MatchingStats } from "@/lib/parser";
-import { calculateScores } from "@/lib/scoring";
-import { Test, MarkingRules, ParsedResponse } from "@/lib/types";
+import { parseResponseSheetHTML, validateResponseSheet, getParsingDiagnostic, getDigialmDebugInfo, ParserDebugInfo } from "@/lib/parser";
+import { Test, ParsedResponse } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
 import { EXAM_DATES, SHIFTS, getExamDateLabel } from "@/lib/examDates";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -51,7 +50,6 @@ const Analyze = () => {
   // Debug and verification state
   const [debugInfo, setDebugInfo] = useState<ParserDebugInfo | null>(null);
   const [showDebug, setShowDebug] = useState(false);
-  const [matchingStats, setMatchingStats] = useState<MatchingStats | null>(null);
   const [parsedPreview, setParsedPreview] = useState<{
     rawCount: number;
     uniqueCount: number;
@@ -142,29 +140,9 @@ const Analyze = () => {
         console.log("Found test in local cache:", localMatch.id);
         setSelectedTestId(localMatch.id);
         
-        // Verify answer keys exist
-        const { data: keyData, error: keyError } = await supabase
-          .from("answer_keys")
-          .select("id", { count: "exact", head: true })
-          .eq("test_id", localMatch.id);
-        
-        if (keyError) {
-          console.error("Error checking answer keys:", keyError);
-          setAnswerKeyCount(0);
-        } else {
-          // Use count from response
-          const { count } = await supabase
-            .from("answer_keys")
-            .select("*", { count: "exact", head: true })
-            .eq("test_id", localMatch.id);
-          
-          console.log("Answer key count:", count);
-          setAnswerKeyCount(count || 0);
-          
-          if ((count || 0) < 75) {
-            setTestLookupError(`Answer key incomplete: only ${count || 0} of 75 questions found.`);
-          }
-        }
+        // Answer keys are now admin-only, just check test exists
+        // The count check will be done server-side during scoring
+        setAnswerKeyCount(75); // Assume complete if test exists
       } else {
         // Try direct DB lookup in case tests array is stale
         console.log("Not in local cache, querying DB directly");
@@ -186,19 +164,8 @@ const Analyze = () => {
         if (dbTest) {
           console.log("Found test in DB:", dbTest.id);
           setSelectedTestId(dbTest.id);
-          
-          // Verify answer keys exist
-          const { count } = await supabase
-            .from("answer_keys")
-            .select("*", { count: "exact", head: true })
-            .eq("test_id", dbTest.id);
-          
-          console.log("Answer key count:", count);
-          setAnswerKeyCount(count || 0);
-          
-          if ((count || 0) < 75) {
-            setTestLookupError(`Answer key incomplete: only ${count || 0} of 75 questions found.`);
-          }
+          // Answer keys are now admin-only, assume complete if test exists
+          setAnswerKeyCount(75);
         } else {
           console.log("No test found in DB for:", { normalizedDate, normalizedShift });
           setTestLookupError(`Answer key not found in database for ${getExamDateLabel(normalizedDate)} (${normalizedShift}). Admin must import the key for this shift.`);
@@ -267,49 +234,20 @@ const Analyze = () => {
       throw new Error(diagnostic);
     }
 
-    // If we have a test selected, fetch answer keys and compute matching stats
-    let stats: MatchingStats | null = null;
-    if (selectedTestId) {
-      const { data: answerKeys, error: akError } = await supabase
-        .rpc("get_answer_keys_for_test", { p_test_id: selectedTestId });
-      
-      if (!akError && answerKeys && answerKeys.length > 0) {
-        stats = matchResponsesWithKeys(parsedResponses, answerKeys);
-        stats.rawParsedCount = rawCount;
-        setMatchingStats(stats);
-        
-        setParsedPreview({
-          rawCount,
-          uniqueCount: parsedResponses.length,
-          matchedCount: stats.matchedWithKeyCount,
-          totalAttempted: stats.totalAttempted,
-          subjectBreakdown: stats.subjectBreakdown,
-          numericalStats: stats.numericalStats,
-        });
-      } else {
-        // No answer keys available
-        setParsedPreview({
-          rawCount,
-          uniqueCount: parsedResponses.length,
-          matchedCount: 0,
-          totalAttempted: 0,
-          subjectBreakdown: [],
-          numericalStats: { total: 0, attempted: 0, examples: [] },
-        });
-        setMatchingStats(null);
-      }
-    } else {
-      // No test selected yet
-      setParsedPreview({
-        rawCount,
-        uniqueCount: parsedResponses.length,
-        matchedCount: 0,
-        totalAttempted: 0,
-        subjectBreakdown: [],
-        numericalStats: { total: 0, attempted: 0, examples: [] },
-      });
-      setMatchingStats(null);
-    }
+    // Since answer keys are now admin-only, we just show basic parsed info
+    // Full matching will happen server-side during scoring
+    setParsedPreview({
+      rawCount,
+      uniqueCount: parsedResponses.length,
+      matchedCount: 0, // Will be computed server-side
+      totalAttempted: parsedResponses.filter(r => r.is_attempted).length,
+      subjectBreakdown: [], // Will be computed server-side
+      numericalStats: { 
+        total: 0, 
+        attempted: parsedResponses.filter(r => r.claimed_numeric_value !== null && r.claimed_numeric_value !== undefined).length, 
+        examples: [] 
+      },
+    });
     
     setPendingHtml(htmlContent);
     setPendingSourceType(sourceType);
@@ -370,12 +308,12 @@ const Analyze = () => {
     }
   };
 
-  // Process analysis with explicit parameters to avoid stale closures
+  // Process analysis using edge function (server-side scoring)
   const processAnalysisWithParams = async (
     htmlContent: string, 
     sourceType: "url" | "html",
     testId: string,
-    allTests: Test[]
+    _allTests: Test[]
   ) => {
     // Parse responses from HTML (already validated in preview step)
     const { responses: parsedResponses } = parseResponseSheetHTML(htmlContent);
@@ -384,64 +322,28 @@ const Analyze = () => {
       throw new Error(diagnostic);
     }
 
-    // Get the selected test using passed parameter
-    const selectedTest = allTests.find((t) => t.id === testId);
-    if (!selectedTest) {
-      throw new Error("Please select a valid exam date and shift.");
+    console.log(`Sending ${parsedResponses.length} responses to edge function for scoring`);
+
+    // Call edge function for secure server-side scoring
+    const { data, error: funcError } = await supabase.functions.invoke("score-submission", {
+      body: { 
+        testId, 
+        parsedResponses,
+        sourceType 
+      },
+    });
+
+    if (funcError) {
+      console.error("Edge function error:", funcError);
+      throw new Error("Failed to process submission. Please try again.");
     }
 
-    // Get answer keys for the test
-    const { data: answerKeys, error: akError } = await supabase
-      .rpc("get_answer_keys_for_test", { p_test_id: testId });
-
-    if (akError || !answerKeys || answerKeys.length === 0) {
-      throw new Error("No answer keys found for this test. Please contact admin.");
+    if (!data?.success) {
+      throw new Error(data?.error || "Failed to calculate score. Please try again.");
     }
 
-    // Create submission first
-    const { data: submission, error: subError } = await supabase
-      .from("submissions")
-      .insert({
-        test_id: testId,
-        source_type: sourceType,
-        share_enabled: true,
-      })
-      .select()
-      .single();
-
-    if (subError || !submission) {
-      throw new Error("Failed to create submission. Please try again.");
-    }
-
-    // Calculate scores
-    const markingRules = selectedTest.marking_rules_json as unknown as MarkingRules;
-    const scoringResult = calculateScores(
-      parsedResponses,
-      answerKeys,
-      markingRules,
-      submission.id
-    );
-
-    // Insert responses
-    const { error: respError } = await supabase
-      .from("responses")
-      .insert(scoringResult.responses);
-
-    if (respError) {
-      console.error("Error inserting responses:", respError);
-    }
-
-    // Update submission with scores
-    const { error: updateError } = await supabase
-      .from("submissions")
-      .update(scoringResult.summary)
-      .eq("id", submission.id);
-
-    if (updateError) {
-      console.error("Error updating submission:", updateError);
-    }
-
-    return submission.id;
+    console.log("Scoring complete:", data.summary);
+    return data.submissionId;
   };
 
   const handleUrlSubmit = async () => {
@@ -783,16 +685,6 @@ const Analyze = () => {
                           </div>
                         )}
                         
-                        {/* Mismatch warning */}
-                        {matchingStats && matchingStats.matchedWithKeyCount < 70 && matchingStats.matchedWithKeyCount > 0 && (
-                          <div className="p-2 rounded border border-destructive/50 bg-destructive/10">
-                            <p className="text-xs text-destructive flex items-center gap-1">
-                              <AlertTriangle className="w-3 h-3" />
-                              Low match rate: Only {matchingStats.matchedWithKeyCount} of {matchingStats.uniqueQuestionCount} questions matched. Report may be incomplete.
-                            </p>
-                          </div>
-                        )}
-                        
                         {/* Show current selection status */}
                         <div className="text-xs text-muted-foreground p-2 bg-background/50 rounded">
                           <p>Selected: {selectedDate ? getExamDateLabel(selectedDate) : "No date"} | {selectedShift || "No shift"}</p>
@@ -809,7 +701,7 @@ const Analyze = () => {
                         
                         <Button 
                           onClick={confirmAndSave}
-                          disabled={isConfirmDisabled || (matchingStats !== null && matchingStats.matchedWithKeyCount < 70)}
+                          disabled={isConfirmDisabled}
                           className="w-full mt-2"
                           size="lg"
                         >
@@ -834,9 +726,7 @@ const Analyze = () => {
                                 ? `Answer key not found in database for ${selectedDate ? getExamDateLabel(selectedDate) : "this date"} (${selectedShift || "no shift"}). Admin must import the key for this shift.`
                                 : answerKeyCount !== null && answerKeyCount < 75
                                   ? `Answer key incomplete (${answerKeyCount} of 75 questions).`
-                                  : matchingStats && matchingStats.matchedWithKeyCount < 70
-                                    ? `Only ${matchingStats.matchedWithKeyCount} questions matched with answer key. At least 70 required.`
-                                    : ""}
+                                  : ""}
                           </p>
                         )}
                       </div>
@@ -852,87 +742,20 @@ const Analyze = () => {
                   </Alert>
                 )}
 
-                {/* Debug Info - Show when parsing fails OR always if there's parsed data and showDebug */}
-                {(debugInfo && !parsedPreview) || (parsedPreview && matchingStats) ? (
+                {/* Debug Info - Show when parsing fails */}
+                {(debugInfo && !parsedPreview) && (
                   <Collapsible open={showDebug} onOpenChange={setShowDebug}>
                     <CollapsibleTrigger asChild>
                       <Button variant="outline" className="w-full justify-between">
                         <span className="flex items-center gap-2">
                           <Bug className="w-4 h-4" />
-                          {parsedPreview ? "Debug: Key Matching & Numerical Details" : "View Debug Info"}
+                          View Debug Info
                         </span>
                         {showDebug ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                       </Button>
                     </CollapsibleTrigger>
                     <CollapsibleContent className="mt-2">
                       <div className="p-4 bg-muted rounded-lg text-xs font-mono space-y-3 max-h-[500px] overflow-auto">
-                        {/* Key Matching Stats (when available) */}
-                        {matchingStats && (
-                          <div className="border-b border-border pb-3">
-                            <p className="font-bold text-sm mb-2 text-primary">Key Matching Stats:</p>
-                            <ul className="list-disc list-inside space-y-1">
-                              <li>Raw Parsed Count: {matchingStats.rawParsedCount}</li>
-                              <li>Unique Question Count: {matchingStats.uniqueQuestionCount}</li>
-                              <li>Matched with Key Count: {matchingStats.matchedWithKeyCount}</li>
-                              <li className="font-medium">Total Attempted: {matchingStats.totalAttempted}</li>
-                              <li>Match Rate: {Math.round((matchingStats.matchedWithKeyCount / matchingStats.uniqueQuestionCount) * 100)}%</li>
-                            </ul>
-                            
-                            {/* Subject-wise attempted */}
-                            <div className="mt-3">
-                              <p className="font-medium text-primary">Subject-wise Attempted:</p>
-                              <ul className="list-disc list-inside">
-                                {matchingStats.subjectBreakdown.map(s => (
-                                  <li key={s.subject}>
-                                    {s.subject}: {s.attempted} attempted / {s.matched} matched / {s.total} total
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                            
-                            {/* Numerical Stats */}
-                            <div className="mt-3 p-2 bg-background rounded border">
-                              <p className="font-medium text-primary mb-1">
-                                Numerical Questions: {matchingStats.numericalStats.attempted}/{matchingStats.numericalStats.total} attempted
-                              </p>
-                              {matchingStats.numericalStats.examples.length > 0 && (
-                                <div className="mt-2">
-                                  <p className="text-muted-foreground mb-1">Sample extracted values:</p>
-                                  <table className="w-full text-xs">
-                                    <thead>
-                                      <tr className="border-b">
-                                        <th className="text-left p-1">Q.ID</th>
-                                        <th className="text-left p-1">Value</th>
-                                        <th className="text-left p-1">Status</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody>
-                                      {matchingStats.numericalStats.examples.map((ex, i) => (
-                                        <tr key={i} className="border-b border-border/50">
-                                          <td className="p-1 font-mono">{ex.questionId.slice(-6)}</td>
-                                          <td className="p-1">{ex.value !== null ? String(ex.value) : "--"}</td>
-                                          <td className={`p-1 ${ex.isAttempted ? "text-primary" : "text-muted-foreground"}`}>
-                                            {ex.isAttempted ? "✓" : "—"}
-                                          </td>
-                                        </tr>
-                                      ))}
-                                    </tbody>
-                                  </table>
-                                </div>
-                              )}
-                            </div>
-                            
-                            {matchingStats.mismatchedIds.length > 0 && (
-                              <div className="mt-2">
-                                <p className="text-destructive font-medium">First {Math.min(10, matchingStats.mismatchedIds.length)} mismatched IDs:</p>
-                                <pre className="whitespace-pre-wrap break-words bg-background p-2 rounded border mt-1 text-xs">
-                                  {matchingStats.mismatchedIds.join(", ")}
-                                </pre>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        
                         {debugInfo && (
                           <>
                             <div>
@@ -985,30 +808,26 @@ const Analyze = () => {
                               <p className="font-bold text-sm mb-1">HTML Stats:</p>
                               <p>Total length: {debugInfo.htmlLength} bytes</p>
                             </div>
-                            {!parsedPreview && (
-                              <>
-                                <div>
-                                  <p className="font-bold text-sm mb-1">Clean Text Preview (first 1500 chars):</p>
-                                  <pre className="whitespace-pre-wrap break-words bg-background p-2 rounded border max-h-40 overflow-auto">
-                                    {debugInfo.cleanTextPreview.substring(0, 1500)}
-                                  </pre>
-                                </div>
-                                {debugInfo.largestScriptPreview && (
-                                  <div>
-                                    <p className="font-bold text-sm mb-1">Largest Script Preview (first 1000 chars):</p>
-                                    <pre className="whitespace-pre-wrap break-words bg-background p-2 rounded border max-h-40 overflow-auto">
-                                      {debugInfo.largestScriptPreview.substring(0, 1000)}
-                                    </pre>
-                                  </div>
-                                )}
-                              </>
+                            <div>
+                              <p className="font-bold text-sm mb-1">Clean Text Preview (first 1500 chars):</p>
+                              <pre className="whitespace-pre-wrap break-words bg-background p-2 rounded border max-h-40 overflow-auto">
+                                {debugInfo.cleanTextPreview.substring(0, 1500)}
+                              </pre>
+                            </div>
+                            {debugInfo.largestScriptPreview && (
+                              <div>
+                                <p className="font-bold text-sm mb-1">Largest Script Preview (first 1000 chars):</p>
+                                <pre className="whitespace-pre-wrap break-words bg-background p-2 rounded border max-h-40 overflow-auto">
+                                  {debugInfo.largestScriptPreview.substring(0, 1000)}
+                                </pre>
+                              </div>
                             )}
                           </>
                         )}
                       </div>
                     </CollapsibleContent>
                   </Collapsible>
-                ) : null}
+                )}
 
                 {/* Fallback Message */}
                 {showUploadFallback && (
