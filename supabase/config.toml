@@ -11,3 +11,6 @@ verify_jwt = false
 
 [functions.upload-answer-keys]
 verify_jwt = false
+
+[functions.score-submission]
+verify_jwt = false
