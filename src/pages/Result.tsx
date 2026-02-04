@@ -6,7 +6,6 @@ import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/landing/Footer";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -36,7 +35,6 @@ import {
   MinusCircle,
   AlertTriangle,
   Target,
-  TrendingUp,
   TrendingDown,
   Loader2,
   Calendar,
@@ -47,6 +45,16 @@ import { Submission, Response as ResponseType, Test, SubjectStats } from "@/lib/
 import { useToast } from "@/hooks/use-toast";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { SectionBreakdownCard } from "@/components/report/SectionBreakdownCard";
+import { PercentileCard } from "@/components/report/PercentileCard";
+import { SubjectSectionTabs } from "@/components/report/SubjectSectionTabs";
+import {
+  SectionBreakdown,
+  SubjectSectionBreakdown,
+  computeSectionStats,
+  computeSubjectSectionStats,
+} from "@/lib/sectionStats";
+import { estimatePercentile, PercentileResult } from "@/lib/percentile";
 
 const Result = () => {
   const { id } = useParams<{ id: string }>();
@@ -59,6 +67,36 @@ const Result = () => {
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
   const [subjectStats, setSubjectStats] = useState<SubjectStats[]>([]);
+  
+  // Section-wise breakdown state
+  const [sectionStats, setSectionStats] = useState<SectionBreakdown>({
+    A: { attempted: 0, correct: 0, wrong: 0, negative: 0, marks: 0, marksLost: 0, total: 0 },
+    B: { attempted: 0, correct: 0, wrong: 0, negative: 0, marks: 0, marksLost: 0, total: 0 },
+  });
+  const [subjectSectionStats, setSubjectSectionStats] = useState<SubjectSectionBreakdown>({
+    Mathematics: {
+      A: { attempted: 0, correct: 0, wrong: 0, negative: 0, marks: 0, marksLost: 0, total: 0 },
+      B: { attempted: 0, correct: 0, wrong: 0, negative: 0, marks: 0, marksLost: 0, total: 0 },
+    },
+    Physics: {
+      A: { attempted: 0, correct: 0, wrong: 0, negative: 0, marks: 0, marksLost: 0, total: 0 },
+      B: { attempted: 0, correct: 0, wrong: 0, negative: 0, marks: 0, marksLost: 0, total: 0 },
+    },
+    Chemistry: {
+      A: { attempted: 0, correct: 0, wrong: 0, negative: 0, marks: 0, marksLost: 0, total: 0 },
+      B: { attempted: 0, correct: 0, wrong: 0, negative: 0, marks: 0, marksLost: 0, total: 0 },
+    },
+  });
+  
+  // Percentile state
+  const [percentileResult, setPercentileResult] = useState<PercentileResult>({
+    percentile: null,
+    displayValue: "N/A",
+    mapped2025Shift: null,
+    mapped2025ShiftDisplay: null,
+    isBelow: false,
+    isAbove: false,
+  });
   
   // Computed overall stats - single source of truth from responses
   const [computedStats, setComputedStats] = useState<{
@@ -101,16 +139,19 @@ const Result = () => {
 
       setSubmission(subData as unknown as Submission);
 
+      let testData: Test | null = null;
+      
       // Fetch test info
       if (subData.test_id) {
-        const { data: testData } = await supabase
+        const { data: tData } = await supabase
           .from("tests")
           .select("*")
           .eq("id", subData.test_id)
           .single();
 
-        if (testData) {
-          setTest(testData as unknown as Test);
+        if (tData) {
+          testData = tData as unknown as Test;
+          setTest(testData);
         }
       }
 
@@ -121,8 +162,29 @@ const Result = () => {
         .eq("submission_id", id)
         .order("question_id");
 
+      // Fetch answer keys for section type determination
+      let answerKeyMap: Map<string, { question_type: string; subject: string }> | undefined;
+      
+      if (subData.test_id) {
+        const { data: keysData } = await supabase
+          .from("answer_keys")
+          .select("question_id, question_type, subject")
+          .eq("test_id", subData.test_id);
+        
+        if (keysData && keysData.length > 0) {
+          answerKeyMap = new Map();
+          keysData.forEach((k) => {
+            answerKeyMap!.set(String(k.question_id), {
+              question_type: k.question_type,
+              subject: k.subject,
+            });
+          });
+        }
+      }
+
       if (respData) {
-        setResponses(respData as unknown as ResponseType[]);
+        const typedResponses = respData as unknown as ResponseType[];
+        setResponses(typedResponses);
 
         // Calculate subject stats from responses - SINGLE SOURCE OF TRUTH
         const stats: Record<string, SubjectStats & { negative: number }> = {};
@@ -199,8 +261,22 @@ const Result = () => {
         
         setComputedStats(computed);
         
+        // Compute section-wise breakdown
+        const sectionBreakdown = computeSectionStats(typedResponses, answerKeyMap);
+        setSectionStats(sectionBreakdown);
+        
+        // Compute subject-section breakdown
+        const subjSectionBreakdown = computeSubjectSectionStats(typedResponses, answerKeyMap);
+        setSubjectSectionStats(subjSectionBreakdown);
+        
+        // Calculate percentile if test has exam_date and shift
+        if (testData?.exam_date && testData?.shift) {
+          const percentile = estimatePercentile(totalMarks, testData.exam_date, testData.shift);
+          setPercentileResult(percentile);
+        }
+        
         console.log("Computed stats from responses:", computed);
-        console.log("Subject stats:", Object.values(stats));
+        console.log("Section stats:", sectionBreakdown);
       }
     } catch (err) {
       console.error("Error fetching results:", err);
@@ -254,19 +330,28 @@ const Result = () => {
     };
     
     doc.setFontSize(16);
-    doc.text(`Total Score: ${stats.total_marks}`, 14, 55);
+    doc.text(`Total Score: ${stats.total_marks}/300`, 14, 58);
+    
+    // Percentile
+    if (percentileResult.percentile !== null) {
+      doc.text(`Est. Percentile (Jan 2025): ${percentileResult.displayValue}`, 100, 58);
+    }
     
     doc.setFontSize(11);
-    doc.text(`Attempted: ${stats.total_attempted}`, 14, 65);
-    doc.text(`Correct: ${stats.total_correct}`, 14, 72);
-    doc.text(`Wrong: ${stats.total_wrong}`, 14, 79);
-    doc.text(`Accuracy: ${stats.accuracy_percentage}%`, 14, 86);
-    doc.text(`Negative Marks: ${stats.negative_marks}`, 14, 93);
+    doc.text(`Attempted: ${stats.total_attempted}`, 14, 68);
+    doc.text(`Correct: ${stats.total_correct}`, 14, 75);
+    doc.text(`Wrong: ${stats.total_wrong}`, 14, 82);
+    doc.text(`Accuracy: ${stats.accuracy_percentage}%`, 14, 89);
+    doc.text(`Negative Marks: ${stats.negative_marks}`, 14, 96);
 
     // Subject breakdown
-    doc.text(`Mathematics: ${stats.math_marks}`, 100, 65);
-    doc.text(`Physics: ${stats.physics_marks}`, 100, 72);
-    doc.text(`Chemistry: ${stats.chemistry_marks}`, 100, 79);
+    doc.text(`Mathematics: ${stats.math_marks}`, 100, 68);
+    doc.text(`Physics: ${stats.physics_marks}`, 100, 75);
+    doc.text(`Chemistry: ${stats.chemistry_marks}`, 100, 82);
+    
+    // Section breakdown
+    doc.text(`Section A (MCQ): ${sectionStats.A.marks}`, 100, 89);
+    doc.text(`Section B (Numerical): ${sectionStats.B.marks}`, 100, 96);
 
     // Mistakes table
     const wrongResponses = responses.filter((r) => r.status === "wrong");
@@ -451,32 +536,43 @@ const Result = () => {
               </div>
             </div>
 
-            {/* Score Card - Uses computedStats from responses as single source of truth */}
-            <div className="score-card mb-8">
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
-                <div>
-                  <p className="text-white/70 text-sm mb-1">Total Score</p>
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-5xl md:text-6xl font-mono font-bold">
-                      {computedStats?.total_marks ?? submission.total_marks}
-                    </span>
-                    <span className="text-2xl text-white/70">/300</span>
+            {/* Score Card + Percentile Row */}
+            <div className="grid md:grid-cols-3 gap-6 mb-8">
+              {/* Score Card - Uses computedStats from responses as single source of truth */}
+              <div className="md:col-span-2 score-card">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
+                  <div>
+                    <p className="text-white/70 text-sm mb-1">Total Score</p>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-5xl md:text-6xl font-mono font-bold">
+                        {computedStats?.total_marks ?? submission.total_marks}
+                      </span>
+                      <span className="text-2xl text-white/70">/300</span>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-4 md:gap-8 text-center">
+                    <div>
+                      <p className="text-3xl font-mono font-bold">{computedStats?.total_attempted ?? submission.total_attempted}</p>
+                      <p className="text-white/70 text-sm">Attempted</p>
+                    </div>
+                    <div>
+                      <p className="text-3xl font-mono font-bold">{computedStats?.accuracy_percentage ?? submission.accuracy_percentage}%</p>
+                      <p className="text-white/70 text-sm">Accuracy</p>
+                    </div>
+                    <div>
+                      <p className="text-3xl font-mono font-bold text-destructive/80">-{computedStats?.negative_marks ?? submission.negative_marks}</p>
+                      <p className="text-white/70 text-sm">Negative</p>
+                    </div>
                   </div>
                 </div>
-                <div className="grid grid-cols-3 gap-4 md:gap-8 text-center">
-                  <div>
-                    <p className="text-3xl font-mono font-bold">{computedStats?.total_attempted ?? submission.total_attempted}</p>
-                    <p className="text-white/70 text-sm">Attempted</p>
-                  </div>
-                  <div>
-                    <p className="text-3xl font-mono font-bold">{computedStats?.accuracy_percentage ?? submission.accuracy_percentage}%</p>
-                    <p className="text-white/70 text-sm">Accuracy</p>
-                  </div>
-                  <div>
-                    <p className="text-3xl font-mono font-bold text-destructive/80">-{computedStats?.negative_marks ?? submission.negative_marks}</p>
-                    <p className="text-white/70 text-sm">Negative</p>
-                  </div>
-                </div>
+              </div>
+              
+              {/* Percentile Card */}
+              <div className="md:col-span-1">
+                <PercentileCard 
+                  percentileResult={percentileResult} 
+                  totalMarks={computedStats?.total_marks ?? submission.total_marks ?? 0} 
+                />
               </div>
             </div>
 
@@ -520,13 +616,16 @@ const Result = () => {
               </Card>
             </div>
 
-            {/* Subject Tabs */}
+            {/* Section-wise Breakdown */}
+            <SectionBreakdownCard sectionStats={sectionStats} />
+
+            {/* Subject Tabs with Section Filter */}
             <Card className="mb-8">
               <CardHeader>
                 <CardTitle className="flex items-center justify-between">
                   <span>Subject-wise Breakdown</span>
                   {subjectStats.length > 0 && subjectStats.length < 3 && (
-                    <Badge variant="outline" className="ml-2 text-amber-600 border-amber-600">
+                    <Badge variant="outline" className="ml-2 text-warning border-warning">
                       <AlertTriangle className="w-3 h-3 mr-1" />
                       Partial: {3 - subjectStats.length} subject(s) missing
                     </Badge>
@@ -534,62 +633,10 @@ const Result = () => {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <Tabs defaultValue="Mathematics">
-                  <TabsList className="grid w-full grid-cols-3">
-                    <TabsTrigger value="Mathematics" className="gap-2">
-                      <span className="w-3 h-3 rounded-full bg-math" />
-                      Math
-                    </TabsTrigger>
-                    <TabsTrigger value="Physics" className="gap-2">
-                      <span className="w-3 h-3 rounded-full bg-physics" />
-                      Physics
-                    </TabsTrigger>
-                    <TabsTrigger value="Chemistry" className="gap-2">
-                      <span className="w-3 h-3 rounded-full bg-chemistry" />
-                      Chemistry
-                    </TabsTrigger>
-                  </TabsList>
-
-                  {["Mathematics", "Physics", "Chemistry"].map((subject) => {
-                    const stats = subjectStats.find((s) => s.subject === subject) || {
-                      marks: subject === "Mathematics" ? (computedStats?.math_marks ?? submission.math_marks) :
-                             subject === "Physics" ? (computedStats?.physics_marks ?? submission.physics_marks) :
-                             (computedStats?.chemistry_marks ?? submission.chemistry_marks),
-                      attempted: 0,
-                      correct: 0,
-                      wrong: 0,
-                      unattempted: 0,
-                      accuracy: 0,
-                    };
-
-                    return (
-                      <TabsContent key={subject} value={subject} className="mt-4">
-                        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                          <div className="p-4 rounded-lg bg-muted">
-                            <p className="text-2xl font-mono font-bold">{stats.marks}</p>
-                            <p className="text-sm text-muted-foreground">Marks</p>
-                          </div>
-                          <div className="p-4 rounded-lg bg-muted">
-                            <p className="text-2xl font-mono font-bold">{stats.attempted}</p>
-                            <p className="text-sm text-muted-foreground">Attempted</p>
-                          </div>
-                          <div className="p-4 rounded-lg bg-muted">
-                            <p className="text-2xl font-mono font-bold text-success">{stats.correct}</p>
-                            <p className="text-sm text-muted-foreground">Correct</p>
-                          </div>
-                          <div className="p-4 rounded-lg bg-muted">
-                            <p className="text-2xl font-mono font-bold text-destructive">{stats.wrong}</p>
-                            <p className="text-sm text-muted-foreground">Wrong</p>
-                          </div>
-                          <div className="p-4 rounded-lg bg-muted">
-                            <p className="text-2xl font-mono font-bold">{stats.accuracy}%</p>
-                            <p className="text-sm text-muted-foreground">Accuracy</p>
-                          </div>
-                        </div>
-                      </TabsContent>
-                    );
-                  })}
-                </Tabs>
+                <SubjectSectionTabs 
+                  subjectSectionStats={subjectSectionStats} 
+                  subjectStats={subjectStats} 
+                />
               </CardContent>
             </Card>
 
