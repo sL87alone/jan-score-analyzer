@@ -223,8 +223,11 @@ const AdminUploadKey = () => {
 
       toast({
         title: "Import Successful!",
-        description: `Verified ${result.totalKeys} answer keys. Math: ${result.breakdown.mathematics}, Physics: ${result.breakdown.physics}, Chemistry: ${result.breakdown.chemistry}`,
+        description: `Saved. Keys now: ${result.totalKeys} (M:${result.breakdown.mathematics} P:${result.breakdown.physics} C:${result.breakdown.chemistry})`,
       });
+
+      // Signal tests page to refresh
+      localStorage.setItem("tests_refresh_needed", Date.now().toString());
 
       // Refresh tests list
       fetchTests();
@@ -406,8 +409,11 @@ const AdminUploadKey = () => {
 
       toast({
         title: "Success!",
-        description: `Uploaded ${result.upsertedCount} keys. Total: ${result.totalKeys} (M:${result.breakdown.mathematics} P:${result.breakdown.physics} C:${result.breakdown.chemistry})`,
+        description: `Saved. Keys now: ${result.totalKeys} (M:${result.breakdown.mathematics} P:${result.breakdown.physics} C:${result.breakdown.chemistry})`,
       });
+
+      // Signal tests page to refresh
+      localStorage.setItem("tests_refresh_needed", Date.now().toString());
 
       // Reset form
       setCsvContent("");

@@ -88,6 +88,32 @@ const AdminTests = () => {
     }
   }, [isAuthenticated]);
 
+  // Check for refresh signal from upload page
+  useEffect(() => {
+    const handleStorageChange = () => {
+      const refreshNeeded = localStorage.getItem("tests_refresh_needed");
+      if (refreshNeeded) {
+        localStorage.removeItem("tests_refresh_needed");
+        fetchTestsWithKeyCounts();
+      }
+    };
+
+    // Check on mount
+    handleStorageChange();
+
+    // Listen for storage events (from other tabs or same-page localStorage changes)
+    window.addEventListener("storage", handleStorageChange);
+    
+    // Also check on focus (for same-tab navigation)
+    const handleFocus = () => handleStorageChange();
+    window.addEventListener("focus", handleFocus);
+    
+    return () => {
+      window.removeEventListener("storage", handleStorageChange);
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, []);
+
   // Initialize tests - auto-seed if empty, then fetch
   const initializeTests = async () => {
     setLoading(true);
