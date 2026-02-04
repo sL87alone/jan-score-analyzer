@@ -4,6 +4,33 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+// Allowed domains for response sheet URLs
+const ALLOWED_DOMAINS = [
+  "cdn3.digialm.com",
+  "cdn.digialm.com",
+  "digialm.com",
+  "ntaresults.nic.in",
+];
+
+function isAllowedUrl(urlString: string): boolean {
+  try {
+    const url = new URL(urlString);
+    return ALLOWED_DOMAINS.some(domain => url.hostname.includes(domain));
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeUrl(urlString: string): string {
+  // Remove hash fragment and trim
+  let sanitized = urlString.trim();
+  const hashIndex = sanitized.indexOf("#");
+  if (hashIndex !== -1) {
+    sanitized = sanitized.substring(0, hashIndex);
+  }
+  return sanitized;
+}
+
 Deno.serve(async (req) => {
   // Handle CORS preflight
   if (req.method === "OPTIONS") {
@@ -20,10 +47,24 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log("Fetching response sheet from:", url);
+    // Validate domain
+    if (!isAllowedUrl(url)) {
+      console.log("Rejected URL (not in allowed domains):", url);
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: "URL must be from an allowed domain (digialm.com or ntaresults.nic.in)" 
+        }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Sanitize URL
+    const sanitizedUrl = sanitizeUrl(url);
+    console.log("Fetching response sheet from:", sanitizedUrl);
 
     // Attempt to fetch the URL
-    const response = await fetch(url, {
+    const response = await fetch(sanitizedUrl, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -90,7 +131,9 @@ Deno.serve(async (req) => {
       );
     }
 
+    // Log diagnostic info for debugging
     console.log("Successfully fetched HTML, length:", html.length);
+    console.log("First 300 chars:", html.substring(0, 300));
 
     return new Response(
       JSON.stringify({ success: true, html }),

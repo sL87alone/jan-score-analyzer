@@ -18,7 +18,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Upload, Link as LinkIcon, FileText, Loader2, AlertCircle, Zap, Calendar, Clock } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
-import { parseResponseSheetHTML, validateResponseSheet } from "@/lib/parser";
+import { parseResponseSheetHTML, validateResponseSheet, getParsingDiagnostic } from "@/lib/parser";
 import { calculateScores } from "@/lib/scoring";
 import { Test, MarkingRules } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
@@ -144,7 +144,8 @@ const Analyze = () => {
     // Parse responses from HTML
     const parsedResponses = parseResponseSheetHTML(htmlContent);
     if (parsedResponses.length === 0) {
-      throw new Error("Could not parse any responses from the file. Please ensure this is a valid JEE response sheet.");
+      const diagnostic = getParsingDiagnostic(htmlContent);
+      throw new Error(diagnostic);
     }
 
     // Get the selected test

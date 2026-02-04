@@ -1,10 +1,26 @@
 import { ParsedResponse } from "./types";
+import { parseDigialmResponseSheet, isDigialmFormat, getDigialmDiagnostic } from "./digialmParser";
 
 /**
  * Parse JEE Main Response Sheet HTML to extract student responses
- * This handles the typical NTA response sheet format
+ * Supports multiple formats: Digialm (cdn3.digialm.com) and traditional table format
  */
 export function parseResponseSheetHTML(html: string): ParsedResponse[] {
+  // First, try the Digialm parser if the format matches
+  if (isDigialmFormat(html)) {
+    console.log("Detected Digialm format, using specialized parser");
+    const diagnostic = getDigialmDiagnostic(html);
+    console.log("Digialm diagnostic:", diagnostic);
+    
+    const responses = parseDigialmResponseSheet(html);
+    if (responses.length > 0) {
+      console.log(`Digialm parser found ${responses.length} responses`);
+      return responses;
+    }
+    console.log("Digialm parser returned 0 responses, falling back to generic parser");
+  }
+
+  // Fall back to generic table-based parser
   const responses: ParsedResponse[] = [];
   
   // Create a DOM parser
@@ -77,7 +93,7 @@ export function parseResponseSheetHTML(html: string): ParsedResponse[] {
   let questionMatches = [...htmlText.matchAll(questionPattern)];
   let chosenMatches = [...htmlText.matchAll(chosenPattern)];
   
-  if (questionMatches.length > 0 && questionMatches.length === chosenMatches.length) {
+  if (responses.length === 0 && questionMatches.length > 0 && questionMatches.length === chosenMatches.length) {
     questionMatches.forEach((qMatch, idx) => {
       const questionId = qMatch[1];
       const chosen = chosenMatches[idx]?.[1]?.trim() || "";
@@ -124,6 +140,11 @@ export function validateResponseSheet(html: string): { valid: boolean; message: 
     return { valid: false, message: "File appears to be empty or too small" };
   }
 
+  // Check for Digialm format first
+  if (isDigialmFormat(html)) {
+    return { valid: true, message: "Valid Digialm response sheet" };
+  }
+
   // Check for common indicators of JEE response sheet
   const indicators = [
     /question/i,
@@ -144,4 +165,20 @@ export function validateResponseSheet(html: string): { valid: boolean; message: 
   }
 
   return { valid: true, message: "Valid response sheet" };
+}
+
+/**
+ * Get parsing diagnostic info for error messages
+ */
+export function getParsingDiagnostic(html: string): string {
+  const diagnostic = getDigialmDiagnostic(html);
+  
+  if (diagnostic.questionCount === 0) {
+    return `We fetched the page (${html.length} bytes) but couldn't detect Question ID blocks. ` +
+           `This link must be a Digialm response sheet (AssessmentQPHTMLMode1). ` +
+           `Try uploading the response HTML if the link content is different.`;
+  }
+  
+  return `Found ${diagnostic.questionCount} questions but could not parse responses. ` +
+         `Has Option IDs: ${diagnostic.hasOptionIds}, Has Chosen Options: ${diagnostic.hasChosenOptions}`;
 }
