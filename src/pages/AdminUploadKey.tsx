@@ -20,6 +20,7 @@ import { Test } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
 import { EXAM_DATES, SHIFTS, getExamDateLabel } from "@/lib/examDates";
 import { BUILT_IN_KEYS, getBuiltInKeyStats } from "@/lib/builtInKeys";
+import { normalizeShift, normalizeExamDate } from "@/lib/normalize";
 
 interface ParsedKey {
   question_id: string;
@@ -30,6 +31,14 @@ interface ParsedKey {
   numeric_tolerance: number;
   is_cancelled: boolean;
   is_bonus: boolean;
+}
+
+interface ImportResult {
+  testId: string;
+  keyCount: number;
+  mathCount: number;
+  physicsCount: number;
+  chemistryCount: number;
 }
 
 const AdminUploadKey = () => {
@@ -53,6 +62,7 @@ const AdminUploadKey = () => {
   const [dateError, setDateError] = useState("");
   const [shiftError, setShiftError] = useState("");
   const [quickImporting, setQuickImporting] = useState(false);
+  const [lastImportResult, setLastImportResult] = useState<ImportResult | null>(null);
   useEffect(() => {
     checkAuth();
     fetchTests();
@@ -150,28 +160,42 @@ const AdminUploadKey = () => {
   const handleQuickImport = async (keySet: typeof BUILT_IN_KEYS[0]) => {
     setQuickImporting(true);
     setError("");
+    setLastImportResult(null);
+
+    // Normalize values
+    const normalizedDate = normalizeExamDate(keySet.exam_date);
+    const normalizedShift = normalizeShift(keySet.shift);
+
+    if (!normalizedDate || !normalizedShift) {
+      setError(`Invalid date/shift in built-in key: ${keySet.exam_date} / ${keySet.shift}`);
+      setQuickImporting(false);
+      return;
+    }
+
+    console.log("Quick import starting:", { normalizedDate, normalizedShift });
 
     try {
       // 1. Upsert the test
       const { data: existingTest } = await supabase
         .from("tests")
         .select("id")
-        .eq("exam_date", keySet.exam_date)
-        .eq("shift", keySet.shift)
+        .eq("exam_date", normalizedDate)
+        .eq("shift", normalizedShift)
         .maybeSingle();
 
       let testId: string;
 
       if (existingTest) {
         testId = existingTest.id;
+        console.log("Found existing test:", testId);
       } else {
         // Create new test with default marking rules
         const { data: newTest, error: testError } = await supabase
           .from("tests")
           .insert({
-            name: `JEE Main - ${getExamDateLabel(keySet.exam_date)} ${keySet.shift}`,
-            exam_date: keySet.exam_date,
-            shift: keySet.shift,
+            name: `JEE Main - ${getExamDateLabel(normalizedDate)} ${normalizedShift}`,
+            exam_date: normalizedDate,
+            shift: normalizedShift,
             is_active: true,
             marking_rules_json: {
               mcq_single: { correct: 4, wrong: -1, unattempted: 0 },
@@ -182,8 +206,12 @@ const AdminUploadKey = () => {
           .select("id")
           .single();
 
-        if (testError) throw testError;
+        if (testError) {
+          console.error("Error creating test:", testError);
+          throw testError;
+        }
         testId = newTest.id;
+        console.log("Created new test:", testId);
       }
 
       // 2. Prepare answer keys for upsert
@@ -199,26 +227,58 @@ const AdminUploadKey = () => {
         is_bonus: false,
       }));
 
+      console.log("Upserting", keysToUpsert.length, "answer keys");
+
       // 3. Upsert answer keys
       const { error: upsertError } = await supabase
         .from("answer_keys")
         .upsert(keysToUpsert, { onConflict: "test_id,question_id" });
 
-      if (upsertError) throw upsertError;
+      if (upsertError) {
+        console.error("Error upserting keys:", upsertError);
+        throw upsertError;
+      }
 
-      // 4. Get stats
-      const stats = getBuiltInKeyStats(keySet.keys);
+      // 4. Verify the import by counting rows
+      const { data: verifyData, error: verifyError } = await supabase
+        .from("answer_keys")
+        .select("subject")
+        .eq("test_id", testId);
 
-      toast({
-        title: "Import Successful!",
-        description: `Imported ${stats.total} answer keys. Math: ${stats.mathematics}, Physics: ${stats.physics}, Chemistry: ${stats.chemistry}`,
+      if (verifyError) {
+        console.error("Error verifying import:", verifyError);
+      }
+
+      const keyCount = verifyData?.length || 0;
+      const mathCount = verifyData?.filter(k => k.subject === "Mathematics").length || 0;
+      const physicsCount = verifyData?.filter(k => k.subject === "Physics").length || 0;
+      const chemistryCount = verifyData?.filter(k => k.subject === "Chemistry").length || 0;
+
+      console.log("Import verified:", { keyCount, mathCount, physicsCount, chemistryCount });
+
+      // Store result for display
+      setLastImportResult({
+        testId,
+        keyCount,
+        mathCount,
+        physicsCount,
+        chemistryCount,
       });
+
+      if (keyCount === 0) {
+        setError("Import appeared to succeed but verification found 0 answer keys. Check database permissions.");
+      } else {
+        toast({
+          title: "Import Successful!",
+          description: `Verified ${keyCount} answer keys in database. Math: ${mathCount}, Physics: ${physicsCount}, Chemistry: ${chemistryCount}`,
+        });
+      }
 
       // Refresh tests list
       fetchTests();
     } catch (err) {
       console.error("Quick import error:", err);
-      setError("Failed to import answer keys. Please try again.");
+      setError(`Failed to import answer keys: ${err instanceof Error ? err.message : "Unknown error"}`);
     } finally {
       setQuickImporting(false);
     }
@@ -468,6 +528,27 @@ const AdminUploadKey = () => {
                   </div>
                 );
               })}
+              
+              {/* Import Verification Result */}
+              {lastImportResult && (
+                <Alert className="border-green-500/50 bg-green-500/10">
+                  <CheckCircle className="h-4 w-4 text-green-600" />
+                  <AlertDescription className="text-foreground">
+                    <div className="space-y-1">
+                      <p className="font-semibold">✓ Import Verified in Database</p>
+                      <p className="text-sm">
+                        Test ID: <code className="bg-muted px-1 rounded">{lastImportResult.testId.slice(0, 8)}...</code>
+                      </p>
+                      <p className="text-sm">
+                        Total Keys: <strong>{lastImportResult.keyCount}</strong> • 
+                        Math: {lastImportResult.mathCount} • 
+                        Physics: {lastImportResult.physicsCount} • 
+                        Chemistry: {lastImportResult.chemistryCount}
+                      </p>
+                    </div>
+                  </AlertDescription>
+                </Alert>
+              )}
             </CardContent>
           </Card>
 
