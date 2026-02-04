@@ -49,15 +49,16 @@ export function calculateScores(
     Chemistry: { marks: 0, attempted: 0, correct: 0, wrong: 0, unattempted: 0 },
   };
 
-  // Create a map for quick answer key lookup
+  // Create a map for quick answer key lookup - ensure string keys
   const answerKeyMap = new Map<string, AnswerKeyItem>();
   answerKeys.forEach((key) => {
-    answerKeyMap.set(key.question_id, key);
+    answerKeyMap.set(String(key.question_id), key);
   });
 
-  // Process each parsed response
+  // Process each parsed response - ensure question_id is a string
   parsedResponses.forEach((parsed) => {
-    const answerKey = answerKeyMap.get(parsed.question_id);
+    const questionId = String(parsed.question_id);
+    const answerKey = answerKeyMap.get(questionId);
     
     if (!answerKey) {
       // Question not found in answer key, skip
@@ -125,8 +126,8 @@ export function calculateScores(
 
     responses.push({
       submission_id: submissionId,
-      question_id: parsed.question_id,
-      claimed_option_ids: parsed.claimed_option_ids || null,
+      question_id: questionId, // Use the string version
+      claimed_option_ids: parsed.claimed_option_ids?.map(id => String(id)) || null,
       claimed_numeric_value: parsed.claimed_numeric_value ?? null,
       status,
       marks_awarded: marksAwarded,

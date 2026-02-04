@@ -16,9 +16,9 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Upload, Link as LinkIcon, FileText, Loader2, AlertCircle, Zap, Calendar, Clock, Bug, ChevronDown, ChevronUp, CheckCircle } from "lucide-react";
+import { Upload, Link as LinkIcon, FileText, Loader2, AlertCircle, Zap, Calendar, Clock, Bug, ChevronDown, ChevronUp, CheckCircle, AlertTriangle } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
-import { parseResponseSheetHTML, validateResponseSheet, getParsingDiagnostic, getDigialmDebugInfo, ParserDebugInfo } from "@/lib/parser";
+import { parseResponseSheetHTML, validateResponseSheet, getParsingDiagnostic, getDigialmDebugInfo, ParserDebugInfo, matchResponsesWithKeys, MatchingStats } from "@/lib/parser";
 import { calculateScores } from "@/lib/scoring";
 import { Test, MarkingRules, ParsedResponse } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
@@ -51,15 +51,18 @@ const Analyze = () => {
   // Debug and verification state
   const [debugInfo, setDebugInfo] = useState<ParserDebugInfo | null>(null);
   const [showDebug, setShowDebug] = useState(false);
+  const [matchingStats, setMatchingStats] = useState<MatchingStats | null>(null);
   const [parsedPreview, setParsedPreview] = useState<{
-    count: number;
-    math: number;
-    physics: number;
-    chemistry: number;
-    numerical: number;
+    rawCount: number;
+    uniqueCount: number;
+    matchedCount: number;
+    subjectBreakdown: { subject: string; matched: number; total: number }[];
+    numericalAttempted: number;
+    numericalTotal: number;
   } | null>(null);
   const [pendingHtml, setPendingHtml] = useState<string | null>(null);
   const [pendingSourceType, setPendingSourceType] = useState<"url" | "html">("url");
+  const [pendingResponses, setPendingResponses] = useState<ParsedResponse[]>([]);
 
   useEffect(() => {
     fetchAllTests();
@@ -236,27 +239,7 @@ const Analyze = () => {
     return valid;
   };
 
-  // Count responses by subject (heuristic based on question order)
-  const countBySubject = (responses: ParsedResponse[]): { math: number; physics: number; chemistry: number; numerical: number } => {
-    const total = responses.length;
-    // JEE Main typically has 25 questions per subject (20 MCQ + 5 Numerical for each)
-    // Questions are usually in order: Math (1-25), Physics (26-50), Chemistry (51-75)
-    let numerical = 0;
-    responses.forEach(r => {
-      if (r.claimed_numeric_value !== undefined) numerical++;
-    });
-    
-    // Rough distribution
-    const perSubject = Math.ceil(total / 3);
-    return {
-      math: Math.min(perSubject, total),
-      physics: Math.min(perSubject, Math.max(0, total - perSubject)),
-      chemistry: Math.max(0, total - 2 * perSubject),
-      numerical,
-    };
-  };
-
-  // Step 1: Parse and preview (don't save yet)
+  // Step 1: Parse and preview (don't save yet) - now with answer key matching
   const parseAndPreview = async (htmlContent: string, sourceType: "url" | "html") => {
     // Validate the HTML
     const validation = validateResponseSheet(htmlContent);
@@ -266,8 +249,8 @@ const Analyze = () => {
       throw new Error(validation.message);
     }
 
-    // Parse responses from HTML
-    const parsedResponses = parseResponseSheetHTML(htmlContent);
+    // Parse responses from HTML (now returns { responses, rawCount })
+    const { responses: parsedResponses, rawCount } = parseResponseSheetHTML(htmlContent);
     
     // Generate debug info
     const debug = getDigialmDebugInfo(htmlContent);
@@ -280,14 +263,60 @@ const Analyze = () => {
       throw new Error(diagnostic);
     }
 
-    // Show preview and store pending data
-    const counts = countBySubject(parsedResponses);
-    setParsedPreview({
-      count: parsedResponses.length,
-      ...counts,
-    });
+    // If we have a test selected, fetch answer keys and compute matching stats
+    let stats: MatchingStats | null = null;
+    if (selectedTestId) {
+      const { data: answerKeys, error: akError } = await supabase
+        .rpc("get_answer_keys_for_test", { p_test_id: selectedTestId });
+      
+      if (!akError && answerKeys && answerKeys.length > 0) {
+        stats = matchResponsesWithKeys(parsedResponses, answerKeys);
+        stats.rawParsedCount = rawCount;
+        setMatchingStats(stats);
+        
+        // Count numerical questions (attempted and total)
+        const numericalKeys = answerKeys.filter((k: { question_type: string }) => k.question_type === "numerical");
+        const numericalAttempted = parsedResponses.filter(r => 
+          r.claimed_numeric_value !== undefined && 
+          numericalKeys.some((k: { question_id: string }) => String(k.question_id) === String(r.question_id))
+        ).length;
+        
+        setParsedPreview({
+          rawCount,
+          uniqueCount: parsedResponses.length,
+          matchedCount: stats.matchedWithKeyCount,
+          subjectBreakdown: stats.subjectBreakdown,
+          numericalAttempted,
+          numericalTotal: numericalKeys.length,
+        });
+      } else {
+        // No answer keys available
+        setParsedPreview({
+          rawCount,
+          uniqueCount: parsedResponses.length,
+          matchedCount: 0,
+          subjectBreakdown: [],
+          numericalAttempted: 0,
+          numericalTotal: 0,
+        });
+        setMatchingStats(null);
+      }
+    } else {
+      // No test selected yet
+      setParsedPreview({
+        rawCount,
+        uniqueCount: parsedResponses.length,
+        matchedCount: 0,
+        subjectBreakdown: [],
+        numericalAttempted: 0,
+        numericalTotal: 0,
+      });
+      setMatchingStats(null);
+    }
+    
     setPendingHtml(htmlContent);
     setPendingSourceType(sourceType);
+    setPendingResponses(parsedResponses);
     
     return parsedResponses.length;
   };
@@ -352,7 +381,7 @@ const Analyze = () => {
     allTests: Test[]
   ) => {
     // Parse responses from HTML (already validated in preview step)
-    const parsedResponses = parseResponseSheetHTML(htmlContent);
+    const { responses: parsedResponses } = parseResponseSheetHTML(htmlContent);
     if (parsedResponses.length === 0) {
       const diagnostic = getParsingDiagnostic(htmlContent);
       throw new Error(diagnostic);
@@ -715,24 +744,57 @@ const Analyze = () => {
                   <Alert className="border-primary/50 bg-primary/10">
                     <CheckCircle className="h-4 w-4 text-primary" />
                     <AlertDescription className="text-foreground">
-                      <div className="space-y-2">
-                        <p className="font-semibold">✓ Parsed {parsedPreview.count} responses successfully!</p>
-                        <div className="text-sm grid grid-cols-2 gap-2">
-                          <span>Mathematics: ~{parsedPreview.math} questions</span>
-                          <span>Physics: ~{parsedPreview.physics} questions</span>
-                          <span>Chemistry: ~{parsedPreview.chemistry} questions</span>
-                          <span>Numerical (Section B): {parsedPreview.numerical} questions</span>
+                      <div className="space-y-3">
+                        {/* Summary counts */}
+                        <div>
+                          <p className="font-semibold">
+                            ✓ Parsed {parsedPreview.uniqueCount} responses ({parsedPreview.rawCount} raw → {parsedPreview.uniqueCount} unique)
+                          </p>
+                          {parsedPreview.matchedCount > 0 ? (
+                            <p className="text-sm text-primary">
+                              Matched with answer key: {parsedPreview.matchedCount} / {parsedPreview.uniqueCount}
+                            </p>
+                          ) : parsedPreview.uniqueCount > 0 && selectedTestId ? (
+                            <p className="text-sm text-destructive flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3" />
+                              No matches with answer key - possible ID format mismatch
+                            </p>
+                          ) : null}
                         </div>
                         
+                        {/* Subject breakdown from answer key matching */}
+                        {parsedPreview.subjectBreakdown.length > 0 && (
+                          <div className="text-sm grid grid-cols-2 gap-2 p-2 bg-background/50 rounded">
+                            {parsedPreview.subjectBreakdown.map(s => (
+                              <span key={s.subject}>
+                                {s.subject}: {s.matched}/{s.total}
+                              </span>
+                            ))}
+                            <span>
+                              Numerical: {parsedPreview.numericalAttempted}/{parsedPreview.numericalTotal} attempted
+                            </span>
+                          </div>
+                        )}
+                        
+                        {/* Mismatch warning */}
+                        {matchingStats && matchingStats.matchedWithKeyCount < 70 && matchingStats.matchedWithKeyCount > 0 && (
+                          <div className="p-2 rounded border border-destructive/50 bg-destructive/10">
+                            <p className="text-xs text-destructive flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3" />
+                              Low match rate: Only {matchingStats.matchedWithKeyCount} of {matchingStats.uniqueQuestionCount} questions matched. Report may be incomplete.
+                            </p>
+                          </div>
+                        )}
+                        
                         {/* Show current selection status */}
-                        <div className="text-xs text-muted-foreground mt-2 p-2 bg-background/50 rounded">
+                        <div className="text-xs text-muted-foreground p-2 bg-background/50 rounded">
                           <p>Selected: {selectedDate ? getExamDateLabel(selectedDate) : "No date"} | {selectedShift || "No shift"}</p>
                           {selectedTestId && answerKeyCount !== null && answerKeyCount >= 75 ? (
                             <p className="text-primary">✓ Answer key found: {answerKeyCount} questions</p>
                           ) : testLookupError ? (
                             <p className="text-destructive">✗ {testLookupError}</p>
                           ) : selectedTestId ? (
-                            <p className="text-amber-600">⚠ Answer key incomplete ({answerKeyCount || 0} of 75)</p>
+                            <p className="text-warning">⚠ Answer key incomplete ({answerKeyCount || 0} of 75)</p>
                           ) : (
                             <p className="text-destructive">✗ No answer key configured for this date/shift</p>
                           )}
@@ -740,8 +802,8 @@ const Analyze = () => {
                         
                         <Button 
                           onClick={confirmAndSave}
-                          disabled={isConfirmDisabled}
-                          className="w-full mt-3"
+                          disabled={isConfirmDisabled || (matchingStats !== null && matchingStats.matchedWithKeyCount < 70)}
+                          className="w-full mt-2"
                           size="lg"
                         >
                           {loading ? (
@@ -765,7 +827,9 @@ const Analyze = () => {
                                 ? `Answer key not found in database for ${selectedDate ? getExamDateLabel(selectedDate) : "this date"} (${selectedShift || "no shift"}). Admin must import the key for this shift.`
                                 : answerKeyCount !== null && answerKeyCount < 75
                                   ? `Answer key incomplete (${answerKeyCount} of 75 questions).`
-                                  : ""}
+                                  : matchingStats && matchingStats.matchedWithKeyCount < 70
+                                    ? `Only ${matchingStats.matchedWithKeyCount} questions matched with answer key. At least 70 required.`
+                                    : ""}
                           </p>
                         )}
                       </div>
@@ -781,60 +845,89 @@ const Analyze = () => {
                   </Alert>
                 )}
 
-                {/* Debug Info - Show when parsing fails */}
-                {debugInfo && !parsedPreview && (
+                {/* Debug Info - Show when parsing fails OR always if there's parsed data and showDebug */}
+                {(debugInfo && !parsedPreview) || (parsedPreview && matchingStats) ? (
                   <Collapsible open={showDebug} onOpenChange={setShowDebug}>
                     <CollapsibleTrigger asChild>
                       <Button variant="outline" className="w-full justify-between">
                         <span className="flex items-center gap-2">
                           <Bug className="w-4 h-4" />
-                          View Debug Info
+                          {parsedPreview ? "Debug: Key Matching Details" : "View Debug Info"}
                         </span>
                         {showDebug ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                       </Button>
                     </CollapsibleTrigger>
                     <CollapsibleContent className="mt-2">
                       <div className="p-4 bg-muted rounded-lg text-xs font-mono space-y-3 max-h-96 overflow-auto">
-                        <div>
-                          <p className="font-bold text-sm mb-1">Markers Found:</p>
-                          <ul className="list-disc list-inside space-y-1">
-                            <li>Question ID variants: {debugInfo.markers.hasQuestionIdVariants.length > 0 ? debugInfo.markers.hasQuestionIdVariants.join(", ") : "None"}</li>
-                            <li>Has Option IDs: {debugInfo.markers.hasOptionIds ? "Yes" : "No"}</li>
-                            <li>Has Chosen Option: {debugInfo.markers.hasChosenOption ? "Yes" : "No"}</li>
-                            <li>Has Given Answer: {debugInfo.markers.hasGivenAnswer ? "Yes" : "No"}</li>
-                            <li>Has Question Palette: {debugInfo.markers.hasQuestionPalette ? "Yes" : "No"}</li>
-                          </ul>
-                        </div>
-                        <div>
-                          <p className="font-bold text-sm mb-1">Script Blocks:</p>
-                          <ul className="list-disc list-inside">
-                            <li>Count: {debugInfo.scriptBlocks.count}</li>
-                            <li>Top lengths: {debugInfo.scriptBlocks.topLengths.join(", ") || "None"}</li>
-                            <li>Has JSON-like data: {debugInfo.scriptBlocks.hasJsonLikeData ? "Yes" : "No"}</li>
-                          </ul>
-                        </div>
-                        <div>
-                          <p className="font-bold text-sm mb-1">HTML Stats:</p>
-                          <p>Total length: {debugInfo.htmlLength} bytes</p>
-                        </div>
-                        <div>
-                          <p className="font-bold text-sm mb-1">Clean Text Preview (first 1500 chars):</p>
-                          <pre className="whitespace-pre-wrap break-words bg-background p-2 rounded border max-h-40 overflow-auto">
-                            {debugInfo.cleanTextPreview.substring(0, 1500)}
-                          </pre>
-                        </div>
-                        {debugInfo.largestScriptPreview && (
-                          <div>
-                            <p className="font-bold text-sm mb-1">Largest Script Preview (first 1000 chars):</p>
-                            <pre className="whitespace-pre-wrap break-words bg-background p-2 rounded border max-h-40 overflow-auto">
-                              {debugInfo.largestScriptPreview.substring(0, 1000)}
-                            </pre>
+                        {/* Key Matching Stats (when available) */}
+                        {matchingStats && (
+                          <div className="border-b border-border pb-3">
+                            <p className="font-bold text-sm mb-2 text-primary">Key Matching Stats:</p>
+                            <ul className="list-disc list-inside space-y-1">
+                              <li>Raw Parsed Count: {matchingStats.rawParsedCount}</li>
+                              <li>Unique Question Count: {matchingStats.uniqueQuestionCount}</li>
+                              <li>Matched with Key Count: {matchingStats.matchedWithKeyCount}</li>
+                              <li>Match Rate: {Math.round((matchingStats.matchedWithKeyCount / matchingStats.uniqueQuestionCount) * 100)}%</li>
+                            </ul>
+                            {matchingStats.mismatchedIds.length > 0 && (
+                              <div className="mt-2">
+                                <p className="text-destructive font-medium">First {Math.min(10, matchingStats.mismatchedIds.length)} mismatched IDs:</p>
+                                <pre className="whitespace-pre-wrap break-words bg-background p-2 rounded border mt-1 text-xs">
+                                  {matchingStats.mismatchedIds.join(", ")}
+                                </pre>
+                              </div>
+                            )}
                           </div>
+                        )}
+                        
+                        {debugInfo && (
+                          <>
+                            <div>
+                              <p className="font-bold text-sm mb-1">Markers Found:</p>
+                              <ul className="list-disc list-inside space-y-1">
+                                <li>Question ID variants: {debugInfo.markers.hasQuestionIdVariants.length > 0 ? debugInfo.markers.hasQuestionIdVariants.join(", ") : "None"}</li>
+                                <li>Has Option IDs: {debugInfo.markers.hasOptionIds ? "Yes" : "No"}</li>
+                                <li>Has Chosen Option: {debugInfo.markers.hasChosenOption ? "Yes" : "No"}</li>
+                                <li>Has Given Answer: {debugInfo.markers.hasGivenAnswer ? "Yes" : "No"}</li>
+                                <li>Has Question Palette: {debugInfo.markers.hasQuestionPalette ? "Yes" : "No"}</li>
+                              </ul>
+                            </div>
+                            <div>
+                              <p className="font-bold text-sm mb-1">Script Blocks:</p>
+                              <ul className="list-disc list-inside">
+                                <li>Count: {debugInfo.scriptBlocks.count}</li>
+                                <li>Top lengths: {debugInfo.scriptBlocks.topLengths.join(", ") || "None"}</li>
+                                <li>Has JSON-like data: {debugInfo.scriptBlocks.hasJsonLikeData ? "Yes" : "No"}</li>
+                              </ul>
+                            </div>
+                            <div>
+                              <p className="font-bold text-sm mb-1">HTML Stats:</p>
+                              <p>Total length: {debugInfo.htmlLength} bytes</p>
+                            </div>
+                            {!parsedPreview && (
+                              <>
+                                <div>
+                                  <p className="font-bold text-sm mb-1">Clean Text Preview (first 1500 chars):</p>
+                                  <pre className="whitespace-pre-wrap break-words bg-background p-2 rounded border max-h-40 overflow-auto">
+                                    {debugInfo.cleanTextPreview.substring(0, 1500)}
+                                  </pre>
+                                </div>
+                                {debugInfo.largestScriptPreview && (
+                                  <div>
+                                    <p className="font-bold text-sm mb-1">Largest Script Preview (first 1000 chars):</p>
+                                    <pre className="whitespace-pre-wrap break-words bg-background p-2 rounded border max-h-40 overflow-auto">
+                                      {debugInfo.largestScriptPreview.substring(0, 1000)}
+                                    </pre>
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </>
                         )}
                       </div>
                     </CollapsibleContent>
                   </Collapsible>
-                )}
+                ) : null}
 
                 {/* Fallback Message */}
                 {showUploadFallback && (

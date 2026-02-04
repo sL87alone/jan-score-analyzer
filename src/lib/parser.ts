@@ -5,25 +5,61 @@ export type { ParserDebugInfo } from "./digialmParser";
 export { getDigialmDebugInfo } from "./digialmParser";
 
 /**
+ * Deduplicate responses by question_id, keeping the last occurrence
+ * Also ensures question_id is always a string
+ */
+function deduplicateResponses(responses: ParsedResponse[]): ParsedResponse[] {
+  const map = new Map<string, ParsedResponse>();
+  for (const r of responses) {
+    // Ensure question_id is always a string
+    const qid = String(r.question_id);
+    map.set(qid, {
+      ...r,
+      question_id: qid,
+      // Ensure option IDs are strings too
+      claimed_option_ids: r.claimed_option_ids?.map(id => String(id)),
+    });
+  }
+  return Array.from(map.values());
+}
+
+/**
  * Parse JEE Main Response Sheet HTML to extract student responses
  * Supports multiple formats: Digialm (cdn3.digialm.com) and traditional table format
+ * Returns deduplicated responses by question_id
  */
-export function parseResponseSheetHTML(html: string): ParsedResponse[] {
+export function parseResponseSheetHTML(html: string): { responses: ParsedResponse[]; rawCount: number } {
+  let rawResponses: ParsedResponse[] = [];
+  
   // First, try the Digialm parser if the format matches
   if (isDigialmFormat(html)) {
     console.log("Detected Digialm format, using specialized parser");
     const diagnostic = getDigialmDiagnostic(html);
     console.log("Digialm diagnostic:", diagnostic);
     
-    const responses = parseDigialmResponseSheet(html);
-    if (responses.length > 0) {
-      console.log(`Digialm parser found ${responses.length} responses`);
-      return responses;
+    rawResponses = parseDigialmResponseSheet(html);
+    if (rawResponses.length > 0) {
+      console.log(`Digialm parser found ${rawResponses.length} raw responses`);
+      const deduplicated = deduplicateResponses(rawResponses);
+      console.log(`After deduplication: ${deduplicated.length} unique responses`);
+      return { responses: deduplicated, rawCount: rawResponses.length };
     }
     console.log("Digialm parser returned 0 responses, falling back to generic parser");
   }
 
   // Fall back to generic table-based parser
+  rawResponses = parseGenericTableFormat(html);
+  
+  // Deduplicate before returning
+  const deduplicated = deduplicateResponses(rawResponses);
+  console.log(`Generic parser: ${rawResponses.length} raw -> ${deduplicated.length} unique`);
+  return { responses: deduplicated, rawCount: rawResponses.length };
+}
+
+/**
+ * Generic table-based parser for fallback
+ */
+function parseGenericTableFormat(html: string): ParsedResponse[] {
   const responses: ParsedResponse[] = [];
   
   // Create a DOM parser
@@ -197,4 +233,76 @@ export function getParsingDiagnostic(html: string): string {
   }
   
   return message;
+}
+
+export interface MatchingStats {
+  rawParsedCount: number;
+  uniqueQuestionCount: number;
+  matchedWithKeyCount: number;
+  mismatchedIds: string[];
+  subjectBreakdown: {
+    subject: string;
+    matched: number;
+    total: number;
+  }[];
+}
+
+/**
+ * Match parsed responses against answer keys and return detailed stats
+ */
+export function matchResponsesWithKeys(
+  parsedResponses: ParsedResponse[],
+  answerKeys: { question_id: string; subject: string; question_type: string }[]
+): MatchingStats {
+  const keyMap = new Map<string, { subject: string; question_type: string }>();
+  answerKeys.forEach(k => keyMap.set(String(k.question_id), { subject: k.subject, question_type: k.question_type }));
+  
+  const parsedIds = new Set(parsedResponses.map(r => String(r.question_id)));
+  const keyIds = new Set(answerKeys.map(k => String(k.question_id)));
+  
+  // Find matched and mismatched
+  const matched: string[] = [];
+  const mismatched: string[] = [];
+  
+  parsedIds.forEach(id => {
+    if (keyIds.has(id)) {
+      matched.push(id);
+    } else {
+      mismatched.push(id);
+    }
+  });
+  
+  // Subject breakdown from matched responses
+  const subjectCounts: Record<string, { matched: number; total: number }> = {
+    Mathematics: { matched: 0, total: 0 },
+    Physics: { matched: 0, total: 0 },
+    Chemistry: { matched: 0, total: 0 },
+  };
+  
+  // Count total per subject from answer keys
+  answerKeys.forEach(k => {
+    if (subjectCounts[k.subject]) {
+      subjectCounts[k.subject].total++;
+    }
+  });
+  
+  // Count matched per subject
+  matched.forEach(id => {
+    const key = keyMap.get(id);
+    if (key && subjectCounts[key.subject]) {
+      subjectCounts[key.subject].matched++;
+    }
+  });
+  
+  return {
+    rawParsedCount: 0, // Will be set by caller
+    uniqueQuestionCount: parsedResponses.length,
+    matchedWithKeyCount: matched.length,
+    mismatchedIds: mismatched.slice(0, 10), // First 10 mismatched
+    subjectBreakdown: Object.entries(subjectCounts).map(([subject, counts]) => ({
+      subject,
+      matched: counts.matched,
+      total: counts.total,
+    })),
+  };
 }
