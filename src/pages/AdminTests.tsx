@@ -31,12 +31,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Plus, Pencil, Trash2, LogOut, Loader2, Upload, Calendar, Database, FileText, Key, RefreshCw, Bug } from "lucide-react";
+import { Plus, Pencil, Trash2, LogOut, Loader2, Upload, Calendar, Database, FileText, Key, RefreshCw, Bug, RotateCcw } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Test, MarkingRules } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
 import { EXAM_DATES, SHIFTS, getExamDateLabel } from "@/lib/examDates";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
+import { UpdateKeysModal } from "@/components/admin/UpdateKeysModal";
 
 const defaultMarkingRules: MarkingRules = {
   mcq_single: { correct: 4, wrong: -1, unattempted: 0 },
@@ -71,6 +72,10 @@ const AdminTests = () => {
   const [editingTest, setEditingTest] = useState<Test | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [debugInfo, setDebugInfo] = useState<{ testId: string; date: string; shift: string; keyCount: number }[]>([]);
+  
+  // Update Keys Modal state
+  const [updateModalOpen, setUpdateModalOpen] = useState(false);
+  const [selectedTestForUpdate, setSelectedTestForUpdate] = useState<TestWithKeyCount | null>(null);
 
   // Form state
   const [name, setName] = useState("");
@@ -795,14 +800,47 @@ const AdminTests = () => {
                               </TableCell>
                               <TableCell className="text-right">
                                 <div className="flex justify-end gap-1">
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    onClick={() => navigate(`/admin/upload-key?testId=${test.id}`)}
-                                    title="Upload Keys"
-                                  >
-                                    <Upload className="w-4 h-4" />
-                                  </Button>
+                                  {/* Show Update Keys button prominently if keys exist */}
+                                  {(test.key_count || 0) >= 75 ? (
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => {
+                                        setSelectedTestForUpdate(test);
+                                        setUpdateModalOpen(true);
+                                      }}
+                                      title="Update Keys"
+                                      className="gap-1"
+                                    >
+                                      <RotateCcw className="w-3 h-3" />
+                                      Update
+                                    </Button>
+                                  ) : (
+                                    <Button
+                                      variant="default"
+                                      size="sm"
+                                      onClick={() => navigate(`/admin/upload-key?testId=${test.id}`)}
+                                      title="Upload Keys"
+                                      className="gap-1"
+                                    >
+                                      <Upload className="w-3 h-3" />
+                                      Upload
+                                    </Button>
+                                  )}
+                                  {/* Update button for partial uploads */}
+                                  {(test.key_count || 0) > 0 && (test.key_count || 0) < 75 && (
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      onClick={() => {
+                                        setSelectedTestForUpdate(test);
+                                        setUpdateModalOpen(true);
+                                      }}
+                                      title="Update Keys"
+                                    >
+                                      <RotateCcw className="w-4 h-4" />
+                                    </Button>
+                                  )}
                                   <Button
                                     variant="ghost"
                                     size="icon"
@@ -833,6 +871,23 @@ const AdminTests = () => {
           </Card>
         </motion.div>
       </main>
+
+      {/* Update Keys Modal */}
+      <UpdateKeysModal
+        open={updateModalOpen}
+        onOpenChange={setUpdateModalOpen}
+        test={selectedTestForUpdate ? {
+          id: selectedTestForUpdate.id,
+          name: selectedTestForUpdate.name,
+          exam_date: selectedTestForUpdate.exam_date || "",
+          shift: selectedTestForUpdate.shift,
+          key_count: selectedTestForUpdate.key_count || 0,
+          updated_at: selectedTestForUpdate.updated_at,
+        } : null}
+        onSuccess={() => {
+          fetchTestsWithKeyCounts(false);
+        }}
+      />
     </div>
   );
 };
