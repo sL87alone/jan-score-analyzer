@@ -44,6 +44,7 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import { Submission, Response as ResponseType, Test, SubjectStats } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/contexts/AuthContext";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { SectionBreakdownCard } from "@/components/report/SectionBreakdownCard";
@@ -64,12 +65,14 @@ const Result = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user, loading: authLoading } = useAuth();
 
   const [submission, setSubmission] = useState<Submission | null>(null);
   const [responses, setResponses] = useState<ResponseType[]>([]);
   const [test, setTest] = useState<Test | null>(null);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
+  const [isOwner, setIsOwner] = useState(false);
   const [subjectStats, setSubjectStats] = useState<SubjectStats[]>([]);
   
   // Section-wise breakdown state
@@ -120,10 +123,11 @@ const Result = () => {
   } | null>(null);
 
   useEffect(() => {
-    if (id) {
+    // Wait for auth to load before fetching results
+    if (id && !authLoading) {
       fetchResults();
     }
-  }, [id]);
+  }, [id, authLoading]);
 
   const fetchResults = async () => {
     try {
@@ -141,6 +145,28 @@ const Result = () => {
           variant: "destructive",
         });
         navigate("/");
+        return;
+      }
+
+      // Check ownership - compare submission user_id with current user
+      const submissionUserId = subData.user_id;
+      const currentUserId = user?.id;
+      const ownerMatch = submissionUserId && currentUserId && submissionUserId === currentUserId;
+      setIsOwner(!!ownerMatch);
+
+      // If not owner, redirect to shared view
+      if (!ownerMatch) {
+        // Check if we have a share token to redirect to
+        if (subData.share_token && subData.share_enabled) {
+          navigate(`/r/${subData.share_token}`, { replace: true });
+        } else {
+          toast({
+            title: "Access Denied",
+            description: "You don't have permission to view this report.",
+            variant: "destructive",
+          });
+          navigate("/");
+        }
         return;
       }
 
@@ -475,7 +501,7 @@ const Result = () => {
     return null;
   };
 
-  if (loading) {
+  if (loading || authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />

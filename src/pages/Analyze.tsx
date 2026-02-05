@@ -298,7 +298,7 @@ const Analyze = () => {
     
     try {
       // Pass current values directly to avoid stale closures
-      const submissionId = await processAnalysisWithParams(
+      const result = await processAnalysisWithParams(
         pendingHtml, 
         pendingSourceType,
         selectedTestId,
@@ -308,8 +308,13 @@ const Analyze = () => {
         title: "Analysis Complete!",
         description: "Your score has been calculated successfully.",
       });
-      // Navigate to shared result page using token (works for anonymous users too)
-      navigate(`/r/${submissionId}`);
+      // Navigate to owner result page if authenticated, else use share token
+      if (result.submissionId) {
+        navigate(`/result/${result.submissionId}`);
+      } else {
+        // Fallback to share route for anonymous users
+        navigate(`/r/${result.shareToken}`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
@@ -352,8 +357,8 @@ const Analyze = () => {
     }
 
     console.log("Scoring complete:", data.summary);
-    // Return share token for redirect (not submission ID)
-    return data.shareToken;
+    // Return full result for redirect decision
+    return { submissionId: data.submissionId, shareToken: data.shareToken };
   };
 
   const handleUrlSubmit = async () => {
