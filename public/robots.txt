@@ -1,14 +1,27 @@
 User-agent: Googlebot
 Allow: /
+ Disallow: /result
+ Disallow: /r/
 
 User-agent: Bingbot
 Allow: /
+ Disallow: /result
+ Disallow: /r/
 
 User-agent: Twitterbot
 Allow: /
+ Disallow: /result
+ Disallow: /r/
 
 User-agent: facebookexternalhit
 Allow: /
+ Disallow: /result
+ Disallow: /r/
 
 User-agent: *
 Allow: /
+ Disallow: /result
+ Disallow: /r/
+
+ # Sitemap
+ Sitemap: https://jan-score-analyzer.lovable.app/sitemap.xml
