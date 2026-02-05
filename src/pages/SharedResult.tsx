@@ -1,11 +1,12 @@
-import { useState, useEffect } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useState, useEffect, useMemo } from "react";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { format } from "date-fns";
 import { Helmet } from "react-helmet-async";
 import { Navbar } from "@/components/Navbar";
 import { Footer } from "@/components/landing/Footer";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import {
   CheckCircle,
   XCircle,
@@ -15,15 +16,19 @@ import {
   Calendar,
   Clock,
   Share2,
+  ExternalLink,
+  Info,
 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/contexts/AuthContext";
 import { PercentileCard } from "@/components/report/PercentileCard";
 import { estimatePercentile, PercentileResult } from "@/lib/percentile";
 
 // Type for the public report data returned by RPC
 interface PublicReportData {
   id: string;
+  user_id?: string; // For ownership check
   test_name: string | null;
   test_shift: string | null;
   exam_date: string | null;
@@ -44,8 +49,10 @@ const SharedResult = () => {
   const { token } = useParams<{ token: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { user } = useAuth();
 
   const [report, setReport] = useState<PublicReportData | null>(null);
+  const [ownerId, setOwnerId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [percentileResult, setPercentileResult] = useState<PercentileResult>({
     percentile: null,
@@ -93,6 +100,19 @@ const SharedResult = () => {
       // RPC returns single row, handle both array and object response
       const reportData = Array.isArray(data) ? data[0] : data;
       setReport(reportData as PublicReportData);
+      
+      // Fetch owner ID separately for ownership check (not exposed via RPC for security)
+      // We'll look up the submission directly since user can only see their own
+      if (reportData.id) {
+        const { data: subData } = await supabase
+          .from("submissions")
+          .select("user_id")
+          .eq("id", reportData.id)
+          .maybeSingle();
+        if (subData?.user_id) {
+          setOwnerId(subData.user_id);
+        }
+      }
 
       // Calculate percentile if exam data available
       if (reportData.exam_date && reportData.test_shift) {
@@ -115,6 +135,11 @@ const SharedResult = () => {
       setLoading(false);
     }
   };
+
+  // Check if current user is the owner
+  const isOwner = useMemo(() => {
+    return user && ownerId && user.id === ownerId;
+  }, [user, ownerId]);
 
   if (loading) {
     return (
@@ -148,10 +173,25 @@ const SharedResult = () => {
             transition={{ duration: 0.5 }}
           >
             {/* Shared indicator */}
-            <div className="flex items-center gap-2 mb-4 text-muted-foreground">
-              <Share2 className="w-4 h-4" />
-              <span className="text-sm">Shared Report (View Only)</span>
-            </div>
+            {isOwner ? (
+              <div className="flex items-center justify-between gap-4 mb-4 p-3 rounded-lg bg-primary/10 border border-primary/20">
+                <div className="flex items-center gap-2 text-primary">
+                  <Info className="w-4 h-4" />
+                  <span className="text-sm font-medium">You're viewing the shared version of your report.</span>
+                </div>
+                <Button asChild size="sm">
+                  <Link to={`/result/${report.id}`}>
+                    <ExternalLink className="w-4 h-4 mr-2" />
+                    Open Full Report
+                  </Link>
+                </Button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 mb-4 text-muted-foreground">
+                <Share2 className="w-4 h-4" />
+                <span className="text-sm">Shared Report (View Only)</span>
+              </div>
+            )}
 
             {/* Exam Info Banner */}
             {report.exam_date && (
