@@ -153,7 +153,6 @@ serve(async (req) => {
       JSON.stringify({ 
         success: true, 
         submissionId: submission.id,
-        shareToken: shareToken,
         summary: scoringResult.summary
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

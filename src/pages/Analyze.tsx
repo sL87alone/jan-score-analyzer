@@ -298,7 +298,7 @@ const Analyze = () => {
     
     try {
       // Pass current values directly to avoid stale closures
-      const shareToken = await processAnalysisWithParams(
+      const submissionId = await processAnalysisWithParams(
         pendingHtml, 
         pendingSourceType,
         selectedTestId,
@@ -308,7 +308,7 @@ const Analyze = () => {
         title: "Analysis Complete!",
         description: "Your score has been calculated successfully.",
       });
-      navigate(`/r/${shareToken}`);
+      navigate(`/result/${submissionId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
@@ -351,7 +351,7 @@ const Analyze = () => {
     }
 
     console.log("Scoring complete:", data.summary);
-    return data.shareToken;
+    return data.submissionId;
   };
 
   const handleUrlSubmit = async () => {
