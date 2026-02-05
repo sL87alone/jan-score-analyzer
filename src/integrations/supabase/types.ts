@@ -117,6 +117,7 @@ export type Database = {
           math_marks: number | null
           negative_marks: number | null
           physics_marks: number | null
+          question_results_json: Json | null
           share_enabled: boolean
           share_token: string | null
           source_type: string
@@ -136,6 +137,7 @@ export type Database = {
           math_marks?: number | null
           negative_marks?: number | null
           physics_marks?: number | null
+          question_results_json?: Json | null
           share_enabled?: boolean
           share_token?: string | null
           source_type: string
@@ -155,6 +157,7 @@ export type Database = {
           math_marks?: number | null
           negative_marks?: number | null
           physics_marks?: number | null
+          question_results_json?: Json | null
           share_enabled?: boolean
           share_token?: string | null
           source_type?: string
