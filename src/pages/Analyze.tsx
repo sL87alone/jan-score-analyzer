@@ -247,7 +247,7 @@ const Analyze = () => {
     setParsedPreview({
       rawCount,
       uniqueCount: parsedResponses.length,
-      matchedCount: 0, // Will be computed server-side
+      matchedCount: parsedResponses.length, // Assume all will match if test exists (validated server-side)
       totalAttempted: parsedResponses.filter(r => r.is_attempted).length,
       subjectBreakdown: [], // Will be computed server-side
       numericalStats: { 
@@ -308,7 +308,8 @@ const Analyze = () => {
         title: "Analysis Complete!",
         description: "Your score has been calculated successfully.",
       });
-      navigate(`/result/${submissionId}`);
+      // Navigate to shared result page using token (works for anonymous users too)
+      navigate(`/r/${submissionId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
     } finally {
@@ -351,7 +352,8 @@ const Analyze = () => {
     }
 
     console.log("Scoring complete:", data.summary);
-    return data.submissionId;
+    // Return share token for redirect (not submission ID)
+    return data.shareToken;
   };
 
   const handleUrlSubmit = async () => {
@@ -657,41 +659,15 @@ const Analyze = () => {
                           <p className="font-semibold">
                             ✓ Parsed {parsedPreview.uniqueCount} responses ({parsedPreview.rawCount} raw → {parsedPreview.uniqueCount} unique)
                           </p>
-                          {parsedPreview.matchedCount > 0 ? (
-                            <>
-                              <p className="text-sm text-primary">
-                                Matched with answer key: {parsedPreview.matchedCount} / {parsedPreview.uniqueCount}
-                              </p>
-                              <p className="text-sm font-medium mt-1">
-                                Total Attempted: {parsedPreview.totalAttempted} / {parsedPreview.matchedCount}
-                              </p>
-                            </>
-                          ) : parsedPreview.uniqueCount > 0 && selectedTestId ? (
-                            <p className="text-sm text-destructive flex items-center gap-1">
-                              <AlertTriangle className="w-3 h-3" />
-                              No matches with answer key - possible ID format mismatch
+                          <p className="text-sm font-medium mt-1">
+                            Total Attempted: {parsedPreview.totalAttempted} / {parsedPreview.uniqueCount}
+                          </p>
+                          {parsedPreview.numericalStats.attempted > 0 && (
+                            <p className="text-xs text-muted-foreground">
+                              Numerical answers detected: {parsedPreview.numericalStats.attempted}
                             </p>
-                          ) : null}
+                          )}
                         </div>
-                        
-                        {/* Subject breakdown with attempted counts */}
-                        {parsedPreview.subjectBreakdown.length > 0 && (
-                          <div className="text-sm p-2 bg-background/50 rounded space-y-1">
-                            <div className="grid grid-cols-3 gap-2">
-                              {parsedPreview.subjectBreakdown.map(s => (
-                                <div key={s.subject} className="text-center">
-                                  <p className="font-medium">{s.subject.slice(0, 4)}</p>
-                                  <p className="text-muted-foreground">{s.attempted}/{s.matched} att</p>
-                                </div>
-                              ))}
-                            </div>
-                            <div className="border-t pt-1 mt-1">
-                              <span className="font-medium">
-                                Numerical: {parsedPreview.numericalStats.attempted}/{parsedPreview.numericalStats.total} attempted
-                              </span>
-                            </div>
-                          </div>
-                        )}
                         
                         {/* Show current selection status */}
                         <div className="text-xs text-muted-foreground p-2 bg-background/50 rounded">
