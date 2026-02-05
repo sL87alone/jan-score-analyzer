@@ -31,13 +31,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Plus, Pencil, Trash2, LogOut, Loader2, Upload, Calendar, Database, FileText, Key, RefreshCw, Bug, RotateCcw } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+ import { Plus, Pencil, Trash2, LogOut, Loader2, Upload, Calendar, Database, FileText, Key, RefreshCw, Bug, RotateCcw, AlertTriangle } from "lucide-react";
 import { Test, MarkingRules } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
 import { EXAM_DATES, SHIFTS, getExamDateLabel } from "@/lib/examDates";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
 import { UpdateKeysModal } from "@/components/admin/UpdateKeysModal";
+ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 const defaultMarkingRules: MarkingRules = {
   mcq_single: { correct: 4, wrong: -1, unattempted: 0 },
@@ -72,6 +72,7 @@ const AdminTests = () => {
   const [editingTest, setEditingTest] = useState<Test | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [debugInfo, setDebugInfo] = useState<{ testId: string; date: string; shift: string; keyCount: number }[]>([]);
+ const [fetchError, setFetchError] = useState<string | null>(null);
   
   // Update Keys Modal state
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
@@ -111,115 +112,130 @@ const AdminTests = () => {
     }
   };
 
-  const fetchTestsWithKeyCounts = useCallback(async (showRefreshToast = false) => {
+   // Helper to get session token
+   const getSessionToken = (): string | null => {
+     const stored = localStorage.getItem("admin_session");
+     if (!stored) return null;
+     try {
+       const parsed = JSON.parse(stored);
+       return parsed.sessionToken || null;
+     } catch {
+       return null;
+     }
+   };
+ 
+   const fetchTestsWithKeyCounts = useCallback(async (showRefreshToast = false) => {
     if (showRefreshToast) {
       setRefreshing(true);
     }
     
+     setFetchError(null);
     console.log("Fetching tests with key counts...");
-    
-    // Fetch all tests
-    const { data: testsData, error: testsError } = await supabase
-      .from("tests")
-      .select("*")
-      .order("exam_date", { ascending: true })
-      .order("shift", { ascending: true });
-
-    if (testsError) {
-      console.error("Error fetching tests:", testsError);
+     
+     const token = getSessionToken();
+     if (!token) {
+       setFetchError("Not authenticated. Please log in again.");
       setLoading(false);
       setRefreshing(false);
       return;
     }
-
-    if (!testsData || testsData.length === 0) {
-      setTests([]);
-      setLoading(false);
-      setRefreshing(false);
-      return;
-    }
-
-    // Fetch key counts for each test
-    const testIds = testsData.map(t => t.id);
-    const { data: keyCounts, error: keyError } = await supabase
-      .from("answer_keys")
-      .select("test_id")
-      .in("test_id", testIds);
-
-    if (keyError) {
-      console.error("Error fetching key counts:", keyError);
-    }
-
-    console.log("Fetched key counts:", keyCounts?.length || 0, "total keys across tests");
-
-    // Count keys per test
-    const countMap = new Map<string, number>();
-    keyCounts?.forEach(k => {
-      countMap.set(k.test_id, (countMap.get(k.test_id) || 0) + 1);
-    });
-
-    // Merge counts with tests
-    const testsWithCounts: TestWithKeyCount[] = testsData.map(test => ({
-      ...(test as unknown as Test),
-      key_count: countMap.get(test.id) || 0,
-    }));
-
-    // Update debug info
-    const debugData = testsWithCounts.map(t => ({
-      testId: t.id,
-      date: t.exam_date || "unknown",
-      shift: t.shift,
-      keyCount: t.key_count || 0,
-    }));
-    setDebugInfo(debugData);
-
-    console.log("Tests with key counts:", debugData);
-
-    setTests(testsWithCounts);
-    setLoading(false);
-    setRefreshing(false);
-    
-    if (showRefreshToast) {
-      const totalKeys = testsWithCounts.reduce((sum, t) => sum + (t.key_count || 0), 0);
-      toast({
-        title: "Data refreshed",
-        description: `Found ${testsWithCounts.length} tests with ${totalKeys} total answer keys`,
-      });
+     
+     try {
+       const response = await fetch(
+         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-fetch-tests`,
+         {
+           method: "GET",
+           headers: {
+             "Content-Type": "application/json",
+             Authorization: `Bearer ${token}`,
+             apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+           },
+         }
+       );
+ 
+       const result = await response.json();
+ 
+       if (!response.ok) {
+         const errorMsg = result.error || `Failed to fetch tests (${response.status})`;
+         console.error("Error fetching tests:", errorMsg);
+         setFetchError(errorMsg);
+         toast({
+           title: "Fetch Failed",
+           description: errorMsg,
+           variant: "destructive",
+         });
+         setLoading(false);
+         setRefreshing(false);
+         return;
+       }
+ 
+       const { tests: testsData, keyCounts } = result;
+ 
+       if (!testsData || testsData.length === 0) {
+         setTests([]);
+         setLoading(false);
+         setRefreshing(false);
+         return;
+       }
+ 
+       // Merge counts with tests
+       const testsWithCounts: TestWithKeyCount[] = testsData.map((test: any) => ({
+         ...(test as Test),
+         key_count: keyCounts[test.id] || 0,
+       }));
+ 
+       // Update debug info
+       const debugData = testsWithCounts.map(t => ({
+         testId: t.id,
+         date: t.exam_date || "unknown",
+         shift: t.shift,
+         keyCount: t.key_count || 0,
+       }));
+       setDebugInfo(debugData);
+ 
+       console.log("Tests with key counts:", debugData);
+ 
+       setTests(testsWithCounts);
+       setLoading(false);
+       setRefreshing(false);
+       
+       if (showRefreshToast) {
+         const totalKeys = testsWithCounts.reduce((sum, t) => sum + (t.key_count || 0), 0);
+         toast({
+           title: "Data refreshed",
+           description: `Found ${testsWithCounts.length} tests with ${totalKeys} total answer keys`,
+         });
+       }
+     } catch (err) {
+       console.error("Fetch error:", err);
+       const errorMsg = err instanceof Error ? err.message : "Network error fetching tests";
+       setFetchError(errorMsg);
+       toast({
+         title: "Fetch Failed",
+         description: errorMsg,
+         variant: "destructive",
+       });
+       setLoading(false);
+       setRefreshing(false);
     }
   }, [toast]);
 
   // Initialize tests - auto-seed if empty, then fetch
   const initializeTests = useCallback(async () => {
     setLoading(true);
+     setFetchError(null);
     
-    // First check if any tests exist
-    const { data: existingTests, error: checkError } = await supabase
-      .from("tests")
-      .select("id")
-      .limit(1);
-
-    if (checkError) {
-      console.error("Error checking tests:", checkError);
-      setLoading(false);
+     const token = getSessionToken();
+     if (!token) {
+       setFetchError("Not authenticated. Please log in again.");
+       setLoading(false);  
       return;
     }
-
-    // If no tests exist, auto-seed silently
-    if (!existingTests || existingTests.length === 0) {
-      console.log("No tests found, auto-seeding Jan 2026 tests...");
-      // Get session token for auto-seed
-      const stored = localStorage.getItem("admin_session");
-      if (stored) {
-        try {
-          const parsed = JSON.parse(stored);
-          await autoSeedTests(parsed.sessionToken);
-        } catch {
-          console.error("Failed to parse session for auto-seed");
-        }
-      }
-    }
-
-    // Now fetch all tests with key counts
+     
+     // Auto-seed first (this handles the empty check internally)
+     await autoSeedTests(token);
+     
+     // Then fetch all tests with key counts
     await fetchTestsWithKeyCounts();
   }, [fetchTestsWithKeyCounts]);
 
@@ -371,35 +387,61 @@ const AdminTests = () => {
 
     try {
       if (editingTest) {
-        const { error } = await supabase
-          .from("tests")
-          .update({
-            name: name.trim(),
-            shift: shift,
-            exam_date: examDate,
-            marking_rules_json: JSON.parse(JSON.stringify(markingRules)),
-            is_active: isActive,
-          })
-          .eq("id", editingTest.id);
-
-        if (error) throw error;
+         const token = getSessionToken();
+         if (!token) throw new Error("Not authenticated");
+         
+         const response = await fetch(
+           `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-manage-tests?action=update`,
+           {
+             method: "POST",
+             headers: {
+               "Content-Type": "application/json",
+               Authorization: `Bearer ${token}`,
+               apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+             },
+             body: JSON.stringify({
+               id: editingTest.id,
+               name: name.trim(),
+               shift: shift,
+               exam_date: examDate,
+               marking_rules_json: markingRules,
+               is_active: isActive,
+             }),
+           }
+         );
+ 
+         const result = await response.json();
+         if (!response.ok) throw new Error(result.error || "Failed to update test");
 
         toast({
           title: "Updated",
           description: "Test updated successfully.",
         });
       } else {
-        const { error } = await supabase
-          .from("tests")
-          .insert({
-            name: name.trim(),
-            shift: shift,
-            exam_date: examDate,
-            marking_rules_json: JSON.parse(JSON.stringify(markingRules)),
-            is_active: isActive,
-          });
-
-        if (error) throw error;
+         const token = getSessionToken();
+         if (!token) throw new Error("Not authenticated");
+         
+         const response = await fetch(
+           `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-manage-tests?action=create`,
+           {
+             method: "POST",
+             headers: {
+               "Content-Type": "application/json",
+               Authorization: `Bearer ${token}`,
+               apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+             },
+             body: JSON.stringify({
+               name: name.trim(),
+               shift: shift,
+               exam_date: examDate,
+               marking_rules_json: markingRules,
+               is_active: isActive,
+             }),
+           }
+         );
+ 
+         const result = await response.json();
+         if (!response.ok) throw new Error(result.error || "Failed to create test");
 
         toast({
           title: "Created",
@@ -432,20 +474,44 @@ const AdminTests = () => {
       return;
     }
 
-    const { error } = await supabase.from("tests").delete().eq("id", testId);
-
-    if (error) {
+     const token = getSessionToken();
+     if (!token) {
       toast({
         title: "Error",
-        description: "Failed to delete test.",
+         description: "Not authenticated. Please log in again.",
         variant: "destructive",
       });
-    } else {
-      toast({
-        title: "Deleted",
-        description: "Test deleted successfully.",
-      });
-      fetchTestsWithKeyCounts();
+       return;
+     }
+ 
+     try {
+       const response = await fetch(
+         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-manage-tests?action=delete`,
+         {
+           method: "POST",
+           headers: {
+             "Content-Type": "application/json",
+             Authorization: `Bearer ${token}`,
+             apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+           },
+           body: JSON.stringify({ id: testId }),
+         }
+       );
+ 
+       const result = await response.json();
+       if (!response.ok) throw new Error(result.error || "Failed to delete test");
+ 
+       toast({
+         title: "Deleted",
+         description: "Test deleted successfully.",
+       });
+       fetchTestsWithKeyCounts();
+     } catch (err) {
+       toast({
+         title: "Error",
+         description: err instanceof Error ? err.message : "Failed to delete test.",
+         variant: "destructive",
+       });
     }
   };
 
@@ -715,7 +781,27 @@ const AdminTests = () => {
           {/* Tests Table */}
           <Card>
             <CardContent className="p-0">
-              {loading ? (
+               {fetchError ? (
+                 <div className="p-6">
+                   <Alert variant="destructive">
+                     <AlertTriangle className="h-4 w-4" />
+                     <AlertTitle>Failed to fetch tests</AlertTitle>
+                     <AlertDescription className="mt-2">
+                       {fetchError}
+                       <div className="mt-4">
+                         <Button 
+                           variant="outline" 
+                           size="sm"
+                           onClick={() => fetchTestsWithKeyCounts(true)}
+                         >
+                           <RefreshCw className="w-4 h-4 mr-2" />
+                           Retry
+                         </Button>
+                       </div>
+                     </AlertDescription>
+                   </Alert>
+                 </div>
+               ) : loading ? (
                 <div className="flex items-center justify-center h-40">
                   <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
                 </div>

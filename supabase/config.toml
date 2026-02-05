@@ -14,3 +14,9 @@ verify_jwt = false
 
 [functions.score-submission]
 verify_jwt = false
+ 
+ [functions.admin-fetch-tests]
+ verify_jwt = false
+ 
+ [functions.admin-manage-tests]
+ verify_jwt = false
