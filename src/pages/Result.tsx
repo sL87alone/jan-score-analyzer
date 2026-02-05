@@ -48,6 +48,8 @@ import autoTable from "jspdf-autotable";
 import { SectionBreakdownCard } from "@/components/report/SectionBreakdownCard";
 import { PercentileCard } from "@/components/report/PercentileCard";
 import { SubjectSectionTabs } from "@/components/report/SubjectSectionTabs";
+ import { QuestionAnalysis } from "@/components/report/QuestionAnalysis";
+ import { QuestionResult } from "@/lib/questionParser";
 import { APP_NAME } from "@/lib/config";
 import {
   SectionBreakdown,
@@ -99,6 +101,9 @@ const Result = () => {
     isAbove: false,
   });
   
+  // Question-wise analysis data (owner only)
+  const [questionResults, setQuestionResults] = useState<QuestionResult[]>([]);
+ 
   // Computed overall stats - single source of truth from responses
   const [computedStats, setComputedStats] = useState<{
     total_marks: number;
@@ -140,6 +145,20 @@ const Result = () => {
 
       setSubmission(subData as unknown as Submission);
 
+      // Extract question results if available (owner-only data)
+      if (subData.question_results_json) {
+        try {
+          const results = typeof subData.question_results_json === 'string'
+            ? JSON.parse(subData.question_results_json)
+            : subData.question_results_json;
+          if (Array.isArray(results)) {
+            setQuestionResults(results as QuestionResult[]);
+          }
+        } catch (e) {
+          console.error("Failed to parse question_results_json:", e);
+        }
+      }
+ 
       let testData: Test | null = null;
       
       // Fetch test info
@@ -665,6 +684,13 @@ const Result = () => {
               </Card>
             )}
 
+            {/* Question-wise Analysis (Owner only) */}
+            {questionResults.length > 0 && (
+              <div className="mb-8">
+                <QuestionAnalysis questionResults={questionResults} />
+              </div>
+            )}
+ 
             {/* Mistakes Table */}
             <Card>
               <CardHeader>

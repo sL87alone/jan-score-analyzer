@@ -11,6 +11,9 @@ interface ParsedResponse {
   is_attempted: boolean;
   claimed_option_ids?: string[];
   claimed_numeric_value?: number | null;
+   // Optional extended data for question analysis
+   question_text?: string;
+   options?: { id: string; label: string; text: string }[];
 }
 
 interface AnswerKeyItem {
@@ -32,6 +35,21 @@ interface MarkingRules {
   };
 }
 
+ interface QuestionResult {
+   question_id: string;
+   qno: number;
+   subject: string;
+   section: "A" | "B";
+   attempted: boolean;
+   is_correct: boolean;
+   marks_awarded: number;
+   negative: number;
+   user_answer: string | number | null;
+   correct_answer: string | number | null;
+   question_text: string;
+   options: { id: string; label: string; text: string }[];
+ }
+ 
 serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -99,7 +117,11 @@ serve(async (req) => {
     // Generate a secure share token
     const shareToken = crypto.randomUUID().replace(/-/g, '').substring(0, 16);
 
-    // Create submission with share token
+    // Calculate scores
+    const markingRules = test.marking_rules_json as MarkingRules;
+    const scoringResult = calculateScores(parsedResponses, answerKeys as AnswerKeyItem[], markingRules, "temp");
+ 
+    // Create submission with share token and question results
     const { data: submission, error: subError } = await supabase
       .from("submissions")
       .insert({
@@ -108,10 +130,12 @@ serve(async (req) => {
         share_enabled: true,
         share_token: shareToken,
         user_id: userId,
+        question_results_json: scoringResult.questionResults,
+        ...scoringResult.summary,
       })
       .select()
       .single();
-
+ 
     if (subError || !submission) {
       console.error("Failed to create submission:", subError);
       return new Response(
@@ -119,32 +143,23 @@ serve(async (req) => {
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
-
+ 
     console.log(`Created submission ${submission.id} with share token`);
 
-    // Calculate scores
-    const markingRules = test.marking_rules_json as MarkingRules;
-    const scoringResult = calculateScores(parsedResponses, answerKeys as AnswerKeyItem[], markingRules, submission.id);
-
     // Insert responses
-    if (scoringResult.responses.length > 0) {
+    const responsesWithSubmissionId = scoringResult.responses.map(r => ({
+      ...r,
+      submission_id: submission.id,
+    }));
+    
+    if (responsesWithSubmissionId.length > 0) {
       const { error: respError } = await supabase
         .from("responses")
-        .insert(scoringResult.responses);
+        .insert(responsesWithSubmissionId);
 
       if (respError) {
         console.error("Error inserting responses:", respError);
       }
-    }
-
-    // Update submission with scores
-    const { error: updateError } = await supabase
-      .from("submissions")
-      .update(scoringResult.summary)
-      .eq("id", submission.id);
-
-    if (updateError) {
-      console.error("Error updating submission:", updateError);
     }
 
     console.log(`Scoring complete: ${scoringResult.summary.total_marks}/300`);
@@ -177,6 +192,7 @@ function calculateScores(
   submissionId: string
 ) {
   const responses: any[] = [];
+  const questionResults: QuestionResult[] = [];
   
   let totalMarks = 0;
   let totalAttempted = 0;
@@ -197,6 +213,15 @@ function calculateScores(
     answerKeyMap.set(String(key.question_id), key);
   });
 
+  // Create a map for parsed responses with extended data
+  const parsedMap = new Map<string, ParsedResponse>();
+  parsedResponses.forEach((r) => {
+    parsedMap.set(String(r.question_id), r);
+  });
+ 
+  // Track question number for ordering
+  let qno = 0;
+ 
   // Process each parsed response
   parsedResponses.forEach((parsed) => {
     const questionId = String(parsed.question_id);
@@ -204,12 +229,16 @@ function calculateScores(
     
     if (!answerKey) return;
 
+    qno++;
     const subject = answerKey.subject;
     const questionType = answerKey.question_type;
     const rules = markingRules[questionType] || { correct: 4, wrong: -1, unattempted: 0 };
+    const isNumerical = questionType === "numerical";
+    const section: "A" | "B" = isNumerical ? "B" : "A";
 
     let status: "correct" | "wrong" | "unattempted" | "cancelled" = "unattempted";
     let marksAwarded = 0;
+    let negative = 0;
 
     if (answerKey.is_cancelled) {
       status = "cancelled";
@@ -250,7 +279,8 @@ function calculateScores(
           marksAwarded = 0;
         } else {
           marksAwarded = rules.wrong;
-          negativeMarks += Math.abs(rules.wrong);
+          negative = Math.abs(rules.wrong);
+          negativeMarks += negative;
         }
         totalWrong++;
         if (subjectScores[subject]) subjectScores[subject].wrong++;
@@ -260,14 +290,45 @@ function calculateScores(
     totalMarks += marksAwarded;
     if (subjectScores[subject]) subjectScores[subject].marks += marksAwarded;
 
+    // Determine user answer for display
+    let userAnswer: string | number | null = null;
+    if (isNumerical) {
+      userAnswer = parsed.claimed_numeric_value ?? null;
+    } else if (parsed.claimed_option_ids && parsed.claimed_option_ids.length > 0) {
+      userAnswer = parsed.claimed_option_ids[0];
+    }
+ 
+    // Determine correct answer for display
+    let correctAnswer: string | number | null = null;
+    if (isNumerical) {
+      correctAnswer = answerKey.correct_numeric_value;
+    } else if (answerKey.correct_option_ids && answerKey.correct_option_ids.length > 0) {
+      correctAnswer = answerKey.correct_option_ids[0];
+    }
+ 
     responses.push({
-      submission_id: submissionId,
       question_id: questionId,
       claimed_option_ids: parsed.claimed_option_ids?.map(id => String(id)) || null,
       claimed_numeric_value: parsed.claimed_numeric_value ?? null,
       status,
       marks_awarded: marksAwarded,
       subject,
+    });
+ 
+    // Build question result for detailed analysis
+    questionResults.push({
+      question_id: questionId,
+      qno,
+      subject,
+      section,
+      attempted: parsed.is_attempted,
+      is_correct: status === "correct",
+      marks_awarded: marksAwarded,
+      negative,
+      user_answer: userAnswer,
+      correct_answer: correctAnswer,
+      question_text: parsed.question_text || `Question ${qno}`,
+      options: parsed.options || [],
     });
   });
 
@@ -277,6 +338,7 @@ function calculateScores(
 
   return {
     responses,
+    questionResults,
     summary: {
       total_marks: totalMarks,
       total_attempted: totalAttempted,
