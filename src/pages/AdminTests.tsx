@@ -31,10 +31,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
- import { Plus, Pencil, Trash2, LogOut, Loader2, Upload, Calendar, Database, FileText, Key, RefreshCw, Bug, RotateCcw, AlertTriangle } from "lucide-react";
+import { Plus, Pencil, Trash2, LogOut, Loader2, Upload, Calendar as CalendarIcon, Database, FileText, Key, RefreshCw, Bug, RotateCcw, AlertTriangle } from "lucide-react";
 import { Test, MarkingRules } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
-import { EXAM_DATES, SHIFTS, getExamDateLabel } from "@/lib/examDates";
+import { SHIFTS, getExamDateLabel } from "@/lib/examDates";
+import { format, parse } from "date-fns";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
 import { UpdateKeysModal } from "@/components/admin/UpdateKeysModal";
  import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -80,10 +84,13 @@ const AdminTests = () => {
 
   // Form state
   const [name, setName] = useState("");
-  const [shift, setShift] = useState("");
+  const [shift, setShift] = useState("Shift 1");
   const [examDate, setExamDate] = useState("");
+  const [examDateObj, setExamDateObj] = useState<Date | undefined>(undefined);
+  const [createBothShifts, setCreateBothShifts] = useState(true);
   const [markingRules, setMarkingRules] = useState<MarkingRules>(defaultMarkingRules);
   const [isActive, setIsActive] = useState(true);
+  const [highlightedIds, setHighlightedIds] = useState<Set<string>>(new Set());
 
   // Silent auto-seed via edge function
   const autoSeedTests = async (token: string) => {
@@ -356,8 +363,10 @@ const AdminTests = () => {
 
   const resetForm = () => {
     setName("");
-    setShift("");
+    setShift("Shift 1");
     setExamDate("");
+    setExamDateObj(undefined);
+    setCreateBothShifts(true);
     setMarkingRules(defaultMarkingRules);
     setIsActive(true);
     setEditingTest(null);
@@ -368,18 +377,63 @@ const AdminTests = () => {
     setName(test.name);
     setShift(test.shift);
     setExamDate(test.exam_date || "");
+    setExamDateObj(test.exam_date ? parse(test.exam_date, "yyyy-MM-dd", new Date()) : undefined);
+    setCreateBothShifts(false);
     setMarkingRules(test.marking_rules_json);
     setIsActive(test.is_active);
     setDialogOpen(true);
   };
 
+  const handleDateSelect = (date: Date | undefined) => {
+    setExamDateObj(date);
+    if (date) {
+      const iso = format(date, "yyyy-MM-dd");
+      setExamDate(iso);
+      // Auto-generate name if empty
+      if (!name.trim()) {
+        setName(`JEE Main ${format(date, "dd MMM yyyy")}`);
+      }
+    } else {
+      setExamDate("");
+    }
+  };
+
+  const createSingleTest = async (token: string, testName: string, testShift: string, testDate: string): Promise<string | null> => {
+    const response = await fetch(
+      `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-manage-tests?action=create`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+          apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+        },
+        body: JSON.stringify({
+          name: testName,
+          shift: testShift,
+          exam_date: testDate,
+          marking_rules_json: markingRules,
+          is_active: isActive,
+        }),
+      }
+    );
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Failed to create test");
+    return result.test?.id || null;
+  };
+
   const handleSubmit = async () => {
-    if (!name.trim() || !shift || !examDate) {
+    if (!name.trim() || !examDate) {
       toast({
         title: "Error",
-        description: "Name, exam date, and shift are required.",
+        description: "Name and exam date are required.",
         variant: "destructive",
       });
+      return;
+    }
+
+    if (!editingTest && !createBothShifts && !shift) {
+      toast({ title: "Error", description: "Please select a shift.", variant: "destructive" });
       return;
     }
 
@@ -387,66 +441,65 @@ const AdminTests = () => {
 
     try {
       if (editingTest) {
-         const token = getSessionToken();
-         if (!token) throw new Error("Not authenticated");
-         
-         const response = await fetch(
-           `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-manage-tests?action=update`,
-           {
-             method: "POST",
-             headers: {
-               "Content-Type": "application/json",
-               Authorization: `Bearer ${token}`,
-               apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-             },
-             body: JSON.stringify({
-               id: editingTest.id,
-               name: name.trim(),
-               shift: shift,
-               exam_date: examDate,
-               marking_rules_json: markingRules,
-               is_active: isActive,
-             }),
-           }
-         );
- 
-         const result = await response.json();
-         if (!response.ok) throw new Error(result.error || "Failed to update test");
+        const token = getSessionToken();
+        if (!token) throw new Error("Not authenticated");
 
-        toast({
-          title: "Updated",
-          description: "Test updated successfully.",
-        });
+        const response = await fetch(
+          `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-manage-tests?action=update`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+              apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+            },
+            body: JSON.stringify({
+              id: editingTest.id,
+              name: name.trim(),
+              shift: shift,
+              exam_date: examDate,
+              marking_rules_json: markingRules,
+              is_active: isActive,
+            }),
+          }
+        );
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Failed to update test");
+
+        toast({ title: "Updated", description: "Test updated successfully." });
       } else {
-         const token = getSessionToken();
-         if (!token) throw new Error("Not authenticated");
-         
-         const response = await fetch(
-           `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-manage-tests?action=create`,
-           {
-             method: "POST",
-             headers: {
-               "Content-Type": "application/json",
-               Authorization: `Bearer ${token}`,
-               apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-             },
-             body: JSON.stringify({
-               name: name.trim(),
-               shift: shift,
-               exam_date: examDate,
-               marking_rules_json: markingRules,
-               is_active: isActive,
-             }),
-           }
-         );
- 
-         const result = await response.json();
-         if (!response.ok) throw new Error(result.error || "Failed to create test");
+        const token = getSessionToken();
+        if (!token) throw new Error("Not authenticated");
+
+        // Check for duplicates
+        const shiftsToCreate = createBothShifts ? ["Shift 1", "Shift 2"] : [shift];
+        const existingDups = tests.filter(
+          (t) => t.exam_date === examDate && shiftsToCreate.includes(t.shift)
+        );
+
+        if (existingDups.length > 0) {
+          const dupShifts = existingDups.map((t) => t.shift).join(", ");
+          if (!confirm(`Tests already exist for ${examDate} (${dupShifts}). Continue anyway? This will fail if the database has a unique constraint.`)) {
+            setCreating(false);
+            return;
+          }
+        }
+
+        const createdIds: string[] = [];
+        for (const s of shiftsToCreate) {
+          const testName = createBothShifts ? `${name.trim()}` : name.trim();
+          const id = await createSingleTest(token, testName, s, examDate);
+          if (id) createdIds.push(id);
+        }
 
         toast({
           title: "Created",
-          description: "Test created successfully.",
+          description: `${createdIds.length} test${createdIds.length > 1 ? "s" : ""} created successfully.`,
         });
+
+        // Highlight newly created tests
+        setHighlightedIds(new Set(createdIds));
+        setTimeout(() => setHighlightedIds(new Set()), 2000);
       }
 
       setDialogOpen(false);
@@ -457,8 +510,8 @@ const AdminTests = () => {
         ? "A test with this date and shift already exists."
         : err?.message?.includes("tests_shift_valid")
         ? "Shift must be 'Shift 1' or 'Shift 2'."
-        : "Failed to save test.";
-      
+        : err?.message || "Failed to save test.";
+
       toast({
         title: "Error",
         description: errorMessage,
@@ -517,7 +570,14 @@ const AdminTests = () => {
 
   const formatExamDate = (dateStr: string | undefined) => {
     if (!dateStr) return "-";
-    return getExamDateLabel(dateStr);
+    // Try known labels first, fallback to formatting the date
+    const known = getExamDateLabel(dateStr);
+    if (known !== dateStr) return known;
+    try {
+      return format(parse(dateStr, "yyyy-MM-dd", new Date()), "dd MMM yyyy");
+    } catch {
+      return dateStr;
+    }
   };
 
   const getKeyCountBadge = (count: number) => {
@@ -534,9 +594,9 @@ const AdminTests = () => {
     if (count >= 75) {
       return <Badge variant="outline" className="border-primary text-primary">Uploaded</Badge>;
     } else if (count > 0) {
-      return <Badge variant="outline" className="border-muted-foreground">Partial</Badge>;
+      return <Badge variant="outline" className="border-muted-foreground">Partial ({count})</Badge>;
     } else {
-      return <Badge variant="outline" className="border-destructive text-destructive">Not uploaded</Badge>;
+      return <Badge variant="outline" className="border-destructive text-destructive">Missing</Badge>;
     }
   };
 
@@ -672,39 +732,67 @@ const AdminTests = () => {
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-2">
                         <Label className="flex items-center gap-2">
-                          <Calendar className="w-4 h-4 text-muted-foreground" />
+                          <CalendarIcon className="w-4 h-4 text-muted-foreground" />
                           Exam Date
                         </Label>
-                        <Select value={examDate} onValueChange={setExamDate}>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select exam date" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {EXAM_DATES.map((date) => (
-                              <SelectItem key={date.value} value={date.value}>
-                                {date.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="outline"
+                              className={cn(
+                                "w-full justify-start text-left font-normal",
+                                !examDateObj && "text-muted-foreground"
+                              )}
+                            >
+                              <CalendarIcon className="mr-2 h-4 w-4" />
+                              {examDateObj ? format(examDateObj, "dd MMM yyyy") : <span>Pick a date</span>}
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-auto p-0" align="start">
+                            <Calendar
+                              mode="single"
+                              selected={examDateObj}
+                              onSelect={handleDateSelect}
+                              initialFocus
+                              className={cn("p-3 pointer-events-auto")}
+                            />
+                          </PopoverContent>
+                        </Popover>
                       </div>
 
                       <div className="space-y-2">
                         <Label htmlFor="shift">Shift</Label>
-                        <Select value={shift} onValueChange={setShift}>
-                          <SelectTrigger id="shift">
-                            <SelectValue placeholder="Select shift" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {SHIFTS.map((s) => (
-                              <SelectItem key={s} value={s}>
-                                {s}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
+                        {!editingTest && createBothShifts ? (
+                          <div className="flex items-center h-10 px-3 rounded-md border bg-muted text-sm text-muted-foreground">
+                            Both shifts
+                          </div>
+                        ) : (
+                          <Select value={shift} onValueChange={setShift}>
+                            <SelectTrigger id="shift">
+                              <SelectValue placeholder="Select shift" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {SHIFTS.map((s) => (
+                                <SelectItem key={s} value={s}>
+                                  {s}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
                       </div>
                     </div>
+
+                    {!editingTest && (
+                      <div className="flex items-center justify-between">
+                        <Label htmlFor="bothShifts">Create both shifts (Shift 1 & Shift 2)</Label>
+                        <Switch
+                          id="bothShifts"
+                          checked={createBothShifts}
+                          onCheckedChange={setCreateBothShifts}
+                        />
+                      </div>
+                    )}
 
                     <div className="space-y-2">
                       <Label>Marking Rules</Label>
@@ -843,7 +931,7 @@ const AdminTests = () => {
                       {/* Date Header */}
                       <div className="bg-muted/50 px-4 py-3 border-b">
                         <div className="flex items-center gap-2">
-                          <Calendar className="w-4 h-4 text-muted-foreground" />
+                          <CalendarIcon className="w-4 h-4 text-muted-foreground" />
                           <span className="font-semibold">{formatExamDate(date)}</span>
                           <Badge variant="outline" className="ml-2">
                             {dateTests.length} shifts
@@ -866,7 +954,9 @@ const AdminTests = () => {
                           {dateTests
                             .sort((a, b) => a.shift.localeCompare(b.shift))
                             .map((test) => (
-                            <TableRow key={test.id}>
+                            <TableRow key={test.id} className={cn(
+                              highlightedIds.has(test.id) && "bg-primary/10 transition-colors duration-2000"
+                            )}>
                               <TableCell className="font-medium">
                                 {test.shift}
                               </TableCell>
