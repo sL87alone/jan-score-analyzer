@@ -23,7 +23,7 @@ export function CTASection() {
           <p className="text-muted-foreground text-lg mb-8 max-w-xl mx-auto">
             Get your complete analysis with expected percentile, section-wise breakdown, and shareable report.
           </p>
-          <Link to="/analyze">
+          <Link to="/auth?mode=signin&next=/analyze">
             <Button size="lg" className="glow-effect text-lg px-10 py-6 gap-2">
               Analyze Now
               <ArrowRight className="w-5 h-5" />
