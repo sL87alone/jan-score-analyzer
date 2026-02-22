@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { motion } from "framer-motion";
 import { ArrowRight, ChevronDown, TrendingUp, LayoutGrid, Target } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { useAuth } from "@/contexts/AuthContext";
 
 const featureBadges = [
   { icon: Target, label: "Marks + Accuracy" },
@@ -11,6 +12,8 @@ const featureBadges = [
 ];
 
 export function Hero() {
+  const { session } = useAuth();
+  const analyzeLink = session ? "/analyze" : "/auth?mode=signin&next=/analyze";
   return (
     <section className="min-h-[90vh] flex flex-col items-center justify-center pt-16 px-4 hero-gradient">
       <div className="container mx-auto max-w-4xl text-center">
@@ -63,7 +66,7 @@ export function Hero() {
           transition={{ duration: 0.6, delay: 0.2 }}
           className="flex flex-col sm:flex-row gap-4 justify-center items-center"
         >
-          <Link to="/analyze">
+          <Link to={analyzeLink}>
             <Button size="lg" className="glow-effect text-lg px-8 py-6 gap-2">
               Check My Score
               <ArrowRight className="w-5 h-5" />
