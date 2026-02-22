@@ -2,8 +2,12 @@ import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Link } from "react-router-dom";
 import { ArrowRight, Zap } from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
 
 export function CTASection() {
+  const { session } = useAuth();
+  const analyzeLink = session ? "/analyze" : "/auth?mode=signin&next=/analyze";
+
   return (
     <section className="py-20 px-4">
       <div className="container mx-auto max-w-3xl">
@@ -23,7 +27,7 @@ export function CTASection() {
           <p className="text-muted-foreground text-lg mb-8 max-w-xl mx-auto">
             Get your complete analysis with expected percentile, section-wise breakdown, and shareable report.
           </p>
-          <Link to="/auth?mode=signin&next=/analyze">
+          <Link to={analyzeLink}>
             <Button size="lg" className="glow-effect text-lg px-10 py-6 gap-2">
               Analyze Now
               <ArrowRight className="w-5 h-5" />
