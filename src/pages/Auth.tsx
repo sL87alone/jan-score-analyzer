@@ -17,7 +17,7 @@ const Auth = () => {
   const { session, loading: authLoading } = useAuth();
 
   const mode = searchParams.get("mode") === "signup" ? "signup" : "signin";
-  const next = searchParams.get("next") || "/analyze";
+  const next = searchParams.get("next") || "/dashboard";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
