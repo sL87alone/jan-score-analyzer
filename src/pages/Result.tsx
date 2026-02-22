@@ -73,6 +73,7 @@ const Result = () => {
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
   const [isOwner, setIsOwner] = useState(false);
+  const [accessDenied, setAccessDenied] = useState(false);
   const [subjectStats, setSubjectStats] = useState<SubjectStats[]>([]);
   
   // Section-wise breakdown state
@@ -136,15 +137,16 @@ const Result = () => {
         .from("submissions")
         .select("*")
         .eq("id", id)
-        .single();
+        .maybeSingle();
 
-      if (subError || !subData) {
-        toast({
-          title: "Error",
-          description: "Result not found or has been deleted.",
-          variant: "destructive",
-        });
-        navigate("/");
+      if (subError) {
+        console.error("Submission fetch error:", subError, { id, authenticated: !!user });
+      }
+
+      if (!subData) {
+        console.warn("0 rows returned for submission", { id, authenticated: !!user });
+        setAccessDenied(true);
+        setLoading(false);
         return;
       }
 
@@ -194,7 +196,7 @@ const Result = () => {
           .from("tests")
           .select("*")
           .eq("id", subData.test_id)
-          .single();
+          .maybeSingle();
 
         if (tData) {
           testData = tData as unknown as Test;
@@ -509,10 +511,28 @@ const Result = () => {
     );
   }
 
-  if (!submission) {
+  if (accessDenied || !submission) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <p className="text-muted-foreground">Result not found</p>
+      <div className="min-h-screen flex flex-col">
+        <Navbar />
+        <main className="flex-1 pt-24 pb-12 px-4 flex items-center justify-center">
+          <Card className="max-w-md w-full">
+            <CardContent className="pt-6 text-center space-y-4">
+              <AlertTriangle className="w-10 h-10 text-warning mx-auto" />
+              <h2 className="text-lg font-semibold">Report not accessible</h2>
+              <p className="text-sm text-muted-foreground">
+                If you're the owner, sign in to view the full report. Otherwise, open the shared link.
+              </p>
+              <div className="flex flex-col gap-2">
+                <Button onClick={() => navigate("/analyze")}>Go to Analyze</Button>
+                <Button variant="outline" onClick={() => navigate("/")}>
+                  Sign In
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </main>
+        <Footer />
       </div>
     );
   }
