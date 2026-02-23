@@ -1,86 +1,149 @@
- import { useState, useMemo } from "react";
- import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
- import { Badge } from "@/components/ui/badge";
- import { Button } from "@/components/ui/button";
- import { Input } from "@/components/ui/input";
+import { useState, useMemo, useEffect } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
- import {
-   Select,
-   SelectContent,
-   SelectItem,
-   SelectTrigger,
-   SelectValue,
- } from "@/components/ui/select";
- import {
-   Tooltip,
-   TooltipContent,
-   TooltipProvider,
-   TooltipTrigger,
- } from "@/components/ui/tooltip";
- import {
-   Collapsible,
-   CollapsibleContent,
-   CollapsibleTrigger,
- } from "@/components/ui/collapsible";
- import {
-   CheckCircle,
-   XCircle,
-   MinusCircle,
-   Search,
-   Info,
-   ChevronDown,
-   ChevronUp,
-   Filter,
- } from "lucide-react";
- import { QuestionResult } from "@/lib/questionParser";
- import { cn } from "@/lib/utils";
- 
- interface QuestionAnalysisProps {
-   questionResults: QuestionResult[];
- }
- 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
+  CheckCircle,
+  XCircle,
+  MinusCircle,
+  Search,
+  Info,
+  ChevronDown,
+  ChevronUp,
+  Filter,
+  Image as ImageIcon,
+} from "lucide-react";
+import { QuestionResult } from "@/lib/questionParser";
+import { cn } from "@/lib/utils";
+import { supabase } from "@/integrations/supabase/client";
+
+interface QuestionAnalysisProps {
+  questionResults: QuestionResult[];
+  testId?: string | null;
+  isSharedView?: boolean;
+}
+
 type StatusTab = "wrong" | "correct" | "unattempted";
- type SubjectFilter = "all" | "Mathematics" | "Physics" | "Chemistry";
- type SectionFilter = "all" | "A" | "B";
- 
- export const QuestionAnalysis = ({ questionResults }: QuestionAnalysisProps) => {
-   const [subjectFilter, setSubjectFilter] = useState<SubjectFilter>("all");
-   const [sectionFilter, setSectionFilter] = useState<SectionFilter>("all");
+type SubjectFilter = "all" | "Mathematics" | "Physics" | "Chemistry";
+type SectionFilter = "all" | "A" | "B";
+
+interface QuestionImage {
+  question_number: number;
+  question_image_url: string;
+  options: { option_number: number; option_image_url: string }[];
+}
+
+export const QuestionAnalysis = ({ questionResults, testId, isSharedView = false }: QuestionAnalysisProps) => {
+  const [subjectFilter, setSubjectFilter] = useState<SubjectFilter>("all");
+  const [sectionFilter, setSectionFilter] = useState<SectionFilter>("all");
   const [activeTab, setActiveTab] = useState<StatusTab>("wrong");
-   const [searchQuery, setSearchQuery] = useState("");
-   const [expandedQuestions, setExpandedQuestions] = useState<Set<string>>(new Set());
-   const [showAllExpanded, setShowAllExpanded] = useState(false);
- 
+  const [searchQuery, setSearchQuery] = useState("");
+  const [expandedQuestions, setExpandedQuestions] = useState<Set<string>>(new Set());
+  const [showAllExpanded, setShowAllExpanded] = useState(false);
+  const [questionImages, setQuestionImages] = useState<Map<number, QuestionImage>>(new Map());
+  const [imagesLoading, setImagesLoading] = useState(false);
+
+  // Fetch question images if available
+  useEffect(() => {
+    if (!testId) return;
+    
+    const fetchImages = async () => {
+      setImagesLoading(true);
+      try {
+        const { data: questions, error } = await supabase
+          .from("questions")
+          .select("id, question_number, question_image_url")
+          .eq("test_id", testId)
+          .order("question_number");
+
+        if (error || !questions || questions.length === 0) {
+          setImagesLoading(false);
+          return;
+        }
+
+        const qIds = questions.map(q => q.id);
+        const { data: options } = await supabase
+          .from("question_options")
+          .select("question_id, option_number, option_image_url")
+          .in("question_id", qIds);
+
+        const imageMap = new Map<number, QuestionImage>();
+        for (const q of questions) {
+          const qOptions = (options || [])
+            .filter(o => o.question_id === q.id)
+            .sort((a, b) => a.option_number - b.option_number);
+          
+          imageMap.set(q.question_number, {
+            question_number: q.question_number,
+            question_image_url: q.question_image_url,
+            options: qOptions.map(o => ({
+              option_number: o.option_number,
+              option_image_url: o.option_image_url,
+            })),
+          });
+        }
+        setQuestionImages(imageMap);
+      } catch (err) {
+        console.error("Failed to fetch question images:", err);
+      } finally {
+        setImagesLoading(false);
+      }
+    };
+
+    fetchImages();
+  }, [testId]);
+
+  // Generate signed URL for private storage
+  const getSignedUrl = async (path: string): Promise<string | null> => {
+    const { data, error } = await supabase.storage
+      .from("question-papers")
+      .createSignedUrl(path, 3600); // 1 hour
+    if (error) return null;
+    return data.signedUrl;
+  };
+
   // Filter questions by tab status
   const filterByStatus = (questions: QuestionResult[], status: StatusTab) => {
     return questions.filter(q => {
-       // Subject filter
-       if (subjectFilter !== "all" && q.subject !== subjectFilter) return false;
-
-       // Section filter
-       if (sectionFilter !== "all" && q.section !== sectionFilter) return false;
-
-      // Status filter based on tab
+      if (subjectFilter !== "all" && q.subject !== subjectFilter) return false;
+      if (sectionFilter !== "all" && q.section !== sectionFilter) return false;
       if (status === "correct" && !q.is_correct) return false;
       if (status === "wrong" && (q.is_correct || !q.attempted)) return false;
       if (status === "unattempted" && q.attempted) return false;
-
-       // Search by question number
-       if (searchQuery) {
-         const searchNum = parseInt(searchQuery, 10);
-         if (!isNaN(searchNum) && q.qno !== searchNum) return false;
-         if (isNaN(searchNum) && !q.question_id.includes(searchQuery)) return false;
-       }
-
-       return true;
-     });
+      if (searchQuery) {
+        const searchNum = parseInt(searchQuery, 10);
+        if (!isNaN(searchNum) && q.qno !== searchNum) return false;
+        if (isNaN(searchNum) && !q.question_id.includes(searchQuery)) return false;
+      }
+      return true;
+    });
   };
 
-  const wrongQuestions = useMemo(() => filterByStatus(questionResults, "wrong"), 
+  const wrongQuestions = useMemo(() => filterByStatus(questionResults, "wrong"),
     [questionResults, subjectFilter, sectionFilter, searchQuery]);
-  const correctQuestions = useMemo(() => filterByStatus(questionResults, "correct"), 
+  const correctQuestions = useMemo(() => filterByStatus(questionResults, "correct"),
     [questionResults, subjectFilter, sectionFilter, searchQuery]);
-  const unattemptedQuestions = useMemo(() => filterByStatus(questionResults, "unattempted"), 
+  const unattemptedQuestions = useMemo(() => filterByStatus(questionResults, "unattempted"),
     [questionResults, subjectFilter, sectionFilter, searchQuery]);
 
   const getQuestionsForTab = (tab: StatusTab) => {
@@ -90,59 +153,60 @@ type StatusTab = "wrong" | "correct" | "unattempted";
       case "unattempted": return unattemptedQuestions;
     }
   };
- 
-   const toggleExpand = (id: string) => {
-     const newExpanded = new Set(expandedQuestions);
-     if (newExpanded.has(id)) {
-       newExpanded.delete(id);
-     } else {
-       newExpanded.add(id);
-     }
-     setExpandedQuestions(newExpanded);
-   };
- 
-   const toggleAllExpanded = () => {
+
+  const toggleExpand = (id: string) => {
+    const newExpanded = new Set(expandedQuestions);
+    if (newExpanded.has(id)) {
+      newExpanded.delete(id);
+    } else {
+      newExpanded.add(id);
+    }
+    setExpandedQuestions(newExpanded);
+  };
+
+  const toggleAllExpanded = () => {
     const currentQuestions = getQuestionsForTab(activeTab);
-     if (showAllExpanded) {
-       setExpandedQuestions(new Set());
-     } else {
+    if (showAllExpanded) {
+      setExpandedQuestions(new Set());
+    } else {
       setExpandedQuestions(new Set(currentQuestions.map(q => q.question_id)));
-     }
-     setShowAllExpanded(!showAllExpanded);
-   };
- 
-   const getStatusIcon = (q: QuestionResult) => {
-     if (!q.attempted) return <MinusCircle className="w-4 h-4 text-muted-foreground" />;
-     if (q.is_correct) return <CheckCircle className="w-4 h-4 text-success" />;
-     return <XCircle className="w-4 h-4 text-destructive" />;
-   };
- 
-   const getStatusLabel = (q: QuestionResult) => {
-     if (!q.attempted) return "Unattempted";
-     if (q.is_correct) return "Correct";
-     return "Wrong";
-   };
- 
-   const getSubjectColor = (subject: string) => {
-     switch (subject) {
-       case "Mathematics": return "bg-math text-white";
-       case "Physics": return "bg-physics text-white";
-       case "Chemistry": return "bg-chemistry text-white";
-       default: return "bg-muted";
-     }
-   };
- 
-   const getSectionLabel = (section: string) => {
-     return section === "A" ? "MCQ" : "Numerical";
-   };
- 
-   // Stats summary
-   const stats = useMemo(() => {
+    }
+    setShowAllExpanded(!showAllExpanded);
+  };
+
+  const getStatusIcon = (q: QuestionResult) => {
+    if (!q.attempted) return <MinusCircle className="w-4 h-4 text-muted-foreground" />;
+    if (q.is_correct) return <CheckCircle className="w-4 h-4 text-success" />;
+    return <XCircle className="w-4 h-4 text-destructive" />;
+  };
+
+  const getStatusLabel = (q: QuestionResult) => {
+    if (!q.attempted) return "Unattempted";
+    if (q.is_correct) return "Correct";
+    return "Wrong";
+  };
+
+  const getSubjectColor = (subject: string) => {
+    switch (subject) {
+      case "Mathematics": return "bg-math text-white";
+      case "Physics": return "bg-physics text-white";
+      case "Chemistry": return "bg-chemistry text-white";
+      default: return "bg-muted";
+    }
+  };
+
+  const getSectionLabel = (section: string) => {
+    return section === "A" ? "MCQ" : "Numerical";
+  };
+
+  const stats = useMemo(() => {
     const wrong = questionResults.filter(q => q.attempted && !q.is_correct).length;
     const correct = questionResults.filter(q => q.is_correct).length;
     const unattempted = questionResults.filter(q => !q.attempted).length;
     return { correct, wrong, unattempted, total: questionResults.length };
   }, [questionResults]);
+
+  const hasImages = questionImages.size > 0;
 
   const renderQuestionList = (questions: QuestionResult[]) => (
     <div className="space-y-3 max-h-[600px] overflow-y-auto pr-2">
@@ -151,163 +215,221 @@ type StatusTab = "wrong" | "correct" | "unattempted";
           No questions match the current filters
         </div>
       ) : (
-        questions.map(q => (
-          <Collapsible
-            key={q.question_id}
-            open={expandedQuestions.has(q.question_id)}
-            onOpenChange={() => toggleExpand(q.question_id)}
-          >
-            <div className={cn(
-              "border rounded-lg overflow-hidden transition-colors",
-              q.is_correct && q.attempted ? "border-success/30" : "",
-              !q.is_correct && q.attempted ? "border-destructive/30" : ""
-            )}>
-              {/* Header */}
-              <CollapsibleTrigger className="w-full p-3 flex items-center gap-3 hover:bg-muted/50 transition-colors">
-                <div className="flex items-center gap-2 flex-1">
-                  {getStatusIcon(q)}
-                  <span className="font-mono font-semibold">Q{q.qno}</span>
-                  <Badge className={cn("text-xs", getSubjectColor(q.subject))}>
-                    {q.subject.slice(0, 4)}
-                  </Badge>
-                  <Badge variant="outline" className="text-xs">
-                    Sec {q.section} ({getSectionLabel(q.section)})
-                  </Badge>
-                  <Badge 
-                    variant="outline" 
-                    className={cn(
-                      "text-xs ml-auto",
-                      q.is_correct && q.attempted ? "border-success text-success" : "",
-                      !q.is_correct && q.attempted ? "border-destructive text-destructive" : ""
+        questions.map(q => {
+          const qImage = questionImages.get(q.qno);
+          return (
+            <Collapsible
+              key={q.question_id}
+              open={expandedQuestions.has(q.question_id)}
+              onOpenChange={() => toggleExpand(q.question_id)}
+            >
+              <div className={cn(
+                "border rounded-lg overflow-hidden transition-colors",
+                q.is_correct && q.attempted ? "border-success/30" : "",
+                !q.is_correct && q.attempted ? "border-destructive/30" : ""
+              )}>
+                {/* Header */}
+                <CollapsibleTrigger className="w-full p-3 flex items-center gap-3 hover:bg-muted/50 transition-colors">
+                  <div className="flex items-center gap-2 flex-1">
+                    {getStatusIcon(q)}
+                    <span className="font-mono font-semibold">Q{q.qno}</span>
+                    <Badge className={cn("text-xs", getSubjectColor(q.subject))}>
+                      {q.subject.slice(0, 4)}
+                    </Badge>
+                    <Badge variant="outline" className="text-xs">
+                      Sec {q.section} ({getSectionLabel(q.section)})
+                    </Badge>
+                    {qImage && (
+                      <ImageIcon className="w-3 h-3 text-primary" />
                     )}
-                  >
-                    {q.marks_awarded > 0 ? `+${q.marks_awarded}` : q.marks_awarded}
-                  </Badge>
-                </div>
-                <ChevronDown className={cn(
-                  "w-4 h-4 transition-transform",
-                  expandedQuestions.has(q.question_id) ? "rotate-180" : ""
-                )} />
-              </CollapsibleTrigger>
-
-              {/* Expanded content */}
-              <CollapsibleContent>
-                <div className="p-3 pt-0 space-y-3 border-t bg-muted/20">
-                  {/* Question text */}
-                  {q.question_text && q.question_text !== `Question ${q.qno}` && (
-                    <p className="text-sm text-muted-foreground line-clamp-3">
-                      {q.question_text}
-                    </p>
-                  )}
-
-                  {/* MCQ Options */}
-                  {q.options.length > 0 && (
-                    <div className="space-y-2">
-                      {q.options.map(opt => {
-                        const isUserSelected = String(q.user_answer) === opt.id;
-                        const isCorrect = String(q.correct_answer) === opt.id;
-                        
-                        return (
-                          <div
-                            key={opt.id}
-                            className={cn(
-                              "flex items-center gap-2 p-2 rounded border text-sm",
-                              isCorrect ? "bg-success/10 border-success" : "",
-                              isUserSelected && !isCorrect ? "bg-destructive/10 border-destructive" : "",
-                              !isCorrect && !isUserSelected ? "border-border" : ""
-                            )}
-                          >
-                            <span className="font-mono w-6 text-center">{opt.label}.</span>
-                            <span className="flex-1">{opt.text || `Option ${opt.label}`}</span>
-                            {isCorrect && (
-                              <CheckCircle className="w-4 h-4 text-success" />
-                            )}
-                            {isUserSelected && !isCorrect && (
-                              <XCircle className="w-4 h-4 text-destructive" />
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  {/* Numerical answer */}
-                  {q.section === "B" && (
-                    <div className="grid grid-cols-2 gap-3 text-sm">
-                      <div className="p-2 rounded bg-muted">
-                        <p className="text-xs text-muted-foreground mb-1">Your Answer</p>
-                        <p className={cn(
-                          "font-mono font-semibold",
-                          q.is_correct ? "text-success" : q.attempted ? "text-destructive" : "text-muted-foreground"
-                        )}>
-                          {q.user_answer !== null ? String(q.user_answer) : "Not answered"}
-                        </p>
-                      </div>
-                      <div className="p-2 rounded bg-success/10">
-                        <p className="text-xs text-muted-foreground mb-1">Correct Answer</p>
-                        <p className="font-mono font-semibold text-success">
-                          {q.correct_answer !== null ? String(q.correct_answer) : "N/A"}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Marks info */}
-                  <div className="flex items-center gap-4 text-xs text-muted-foreground pt-2 border-t">
-                    <span>Status: {getStatusLabel(q)}</span>
-                    <span>
-                      Marks: {q.marks_awarded > 0 ? `+${q.marks_awarded}` : q.marks_awarded}
-                      {q.negative > 0 && ` (−${q.negative} negative)`}
-                    </span>
-                    <span className="font-mono text-xs">ID: {q.question_id}</span>
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "text-xs ml-auto",
+                        q.is_correct && q.attempted ? "border-success text-success" : "",
+                        !q.is_correct && q.attempted ? "border-destructive text-destructive" : ""
+                      )}
+                    >
+                      {q.marks_awarded > 0 ? `+${q.marks_awarded}` : q.marks_awarded}
+                    </Badge>
                   </div>
-                </div>
-              </CollapsibleContent>
-            </div>
-          </Collapsible>
-        ))
+                  <ChevronDown className={cn(
+                    "w-4 h-4 transition-transform",
+                    expandedQuestions.has(q.question_id) ? "rotate-180" : ""
+                  )} />
+                </CollapsibleTrigger>
+
+                {/* Expanded content */}
+                <CollapsibleContent>
+                  <div className="p-3 pt-0 space-y-3 border-t bg-muted/20">
+                    {/* Question Image */}
+                    {qImage && (
+                      <QuestionImageDisplay
+                        imagePath={qImage.question_image_url}
+                        alt={`Question ${q.qno}`}
+                      />
+                    )}
+
+                    {/* Question text (fallback if no image) */}
+                    {!qImage && q.question_text && q.question_text !== `Question ${q.qno}` && (
+                      <p className="text-sm text-muted-foreground line-clamp-3">
+                        {q.question_text}
+                      </p>
+                    )}
+
+                    {/* MCQ Options with images */}
+                    {qImage && qImage.options.length > 0 && q.section === "A" && (
+                      <div className="space-y-2">
+                        {qImage.options.map(opt => {
+                          const optLabel = String.fromCharCode(64 + opt.option_number); // A,B,C,D
+                          const optId = q.options.find(o => o.label === optLabel)?.id;
+                          const isUserSelected = !isSharedView && String(q.user_answer) === optId;
+                          const isCorrect = String(q.correct_answer) === optId;
+
+                          return (
+                            <div
+                              key={opt.option_number}
+                              className={cn(
+                                "flex items-start gap-2 p-2 rounded border text-sm",
+                                isCorrect ? "bg-success/10 border-success" : "",
+                                isUserSelected && !isCorrect ? "bg-destructive/10 border-destructive" : "",
+                                !isCorrect && !isUserSelected ? "border-border" : ""
+                              )}
+                            >
+                              <span className="font-mono w-6 text-center mt-1">{optLabel}.</span>
+                              <div className="flex-1">
+                                <QuestionImageDisplay
+                                  imagePath={opt.option_image_url}
+                                  alt={`Option ${optLabel}`}
+                                  className="max-h-24"
+                                />
+                              </div>
+                              {isCorrect && <CheckCircle className="w-4 h-4 text-success mt-1" />}
+                              {isUserSelected && !isCorrect && <XCircle className="w-4 h-4 text-destructive mt-1" />}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* MCQ Options (text-only fallback) */}
+                    {(!qImage || qImage.options.length === 0) && q.options.length > 0 && (
+                      <div className="space-y-2">
+                        {q.options.map(opt => {
+                          const isUserSelected = !isSharedView && String(q.user_answer) === opt.id;
+                          const isCorrect = String(q.correct_answer) === opt.id;
+
+                          return (
+                            <div
+                              key={opt.id}
+                              className={cn(
+                                "flex items-center gap-2 p-2 rounded border text-sm",
+                                isCorrect ? "bg-success/10 border-success" : "",
+                                isUserSelected && !isCorrect ? "bg-destructive/10 border-destructive" : "",
+                                !isCorrect && !isUserSelected ? "border-border" : ""
+                              )}
+                            >
+                              <span className="font-mono w-6 text-center">{opt.label}.</span>
+                              <span className="flex-1">{opt.text || `Option ${opt.label}`}</span>
+                              {isCorrect && <CheckCircle className="w-4 h-4 text-success" />}
+                              {isUserSelected && !isCorrect && <XCircle className="w-4 h-4 text-destructive" />}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* Numerical answer */}
+                    {q.section === "B" && (
+                      <div className="grid grid-cols-2 gap-3 text-sm">
+                        <div className="p-2 rounded bg-muted">
+                          <p className="text-xs text-muted-foreground mb-1">
+                            {isSharedView ? "Answer" : "Your Answer"}
+                          </p>
+                          {!isSharedView ? (
+                            <p className={cn(
+                              "font-mono font-semibold",
+                              q.is_correct ? "text-success" : q.attempted ? "text-destructive" : "text-muted-foreground"
+                            )}>
+                              {q.user_answer !== null ? String(q.user_answer) : "Not answered"}
+                            </p>
+                          ) : (
+                            <p className="font-mono text-muted-foreground">Hidden</p>
+                          )}
+                        </div>
+                        <div className="p-2 rounded bg-success/10">
+                          <p className="text-xs text-muted-foreground mb-1">Correct Answer</p>
+                          <p className="font-mono font-semibold text-success">
+                            {q.correct_answer !== null ? String(q.correct_answer) : "N/A"}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Marks info */}
+                    <div className="flex items-center gap-4 text-xs text-muted-foreground pt-2 border-t">
+                      <span>Status: {getStatusLabel(q)}</span>
+                      <span>
+                        Marks: {q.marks_awarded > 0 ? `+${q.marks_awarded}` : q.marks_awarded}
+                        {q.negative > 0 && ` (−${q.negative} negative)`}
+                      </span>
+                      <span className="font-mono text-xs">ID: {q.question_id}</span>
+                    </div>
+                  </div>
+                </CollapsibleContent>
+              </div>
+            </Collapsible>
+          );
+        })
       )}
     </div>
   );
- 
-   return (
-     <Card>
-       <CardHeader>
-         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-           <div className="flex items-center gap-2">
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="flex items-center gap-2">
             <CardTitle>Question-wise Paper Review</CardTitle>
-             <TooltipProvider>
-               <Tooltip>
-                 <TooltipTrigger>
-                   <Info className="w-4 h-4 text-muted-foreground" />
-                 </TooltipTrigger>
-                 <TooltipContent className="max-w-xs">
-                   <div className="space-y-2 text-sm">
-                     <p className="font-semibold">Marking Rules:</p>
-                     <p>• Section A (MCQ): +4 correct, -1 wrong, 0 unattempted</p>
-                     <p>• Section B (Numerical): +4 correct, 0 wrong/unattempted</p>
+            {hasImages && (
+              <Badge variant="outline" className="text-xs border-primary text-primary">
+                <ImageIcon className="w-3 h-3 mr-1" />
+                Images
+              </Badge>
+            )}
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger>
+                  <Info className="w-4 h-4 text-muted-foreground" />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  <div className="space-y-2 text-sm">
+                    <p className="font-semibold">Marking Rules:</p>
+                    <p>• Section A (MCQ): +4 correct, -1 wrong, 0 unattempted</p>
+                    <p>• Section B (Numerical): +4 correct, 0 wrong/unattempted</p>
+                    {hasImages && <p>• Question images are available for this test</p>}
                     <p className="text-xs text-muted-foreground mt-2">This data is private and only visible to you.</p>
-                   </div>
-                 </TooltipContent>
-               </Tooltip>
-             </TooltipProvider>
-           </div>
-           <Button variant="outline" size="sm" onClick={toggleAllExpanded}>
-             {showAllExpanded ? (
-               <>
-                 <ChevronUp className="w-4 h-4 mr-1" />
-                 Collapse All
-               </>
-             ) : (
-               <>
-                 <ChevronDown className="w-4 h-4 mr-1" />
-                 Expand All
-               </>
-             )}
-           </Button>
-         </div>
-       </CardHeader>
-       <CardContent className="space-y-4">
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </div>
+          <Button variant="outline" size="sm" onClick={toggleAllExpanded}>
+            {showAllExpanded ? (
+              <>
+                <ChevronUp className="w-4 h-4 mr-1" />
+                Collapse All
+              </>
+            ) : (
+              <>
+                <ChevronDown className="w-4 h-4 mr-1" />
+                Expand All
+              </>
+            )}
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
         {/* Filters row */}
         <div className="flex flex-wrap gap-3 p-3 bg-muted/50 rounded-lg">
           <div className="flex items-center gap-2">
@@ -324,7 +446,7 @@ type StatusTab = "wrong" | "correct" | "unattempted";
               <SelectItem value="Chemistry">Chemistry</SelectItem>
             </SelectContent>
           </Select>
-          
+
           <Select value={sectionFilter} onValueChange={(v) => setSectionFilter(v as SectionFilter)}>
             <SelectTrigger className="w-[130px]">
               <SelectValue placeholder="Section" />
@@ -335,7 +457,7 @@ type StatusTab = "wrong" | "correct" | "unattempted";
               <SelectItem value="B">Section B (Num)</SelectItem>
             </SelectContent>
           </Select>
-          
+
           <div className="relative flex-1 min-w-[150px]">
             <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
@@ -346,7 +468,7 @@ type StatusTab = "wrong" | "correct" | "unattempted";
             />
           </div>
         </div>
- 
+
         {/* Tabs for Wrong/Correct/Unattempted */}
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as StatusTab)} className="w-full">
           <TabsList className="grid w-full grid-cols-3">
@@ -363,20 +485,64 @@ type StatusTab = "wrong" | "correct" | "unattempted";
               Unattempted ({stats.unattempted})
             </TabsTrigger>
           </TabsList>
-          
+
           <TabsContent value="wrong" className="mt-4">
             {renderQuestionList(wrongQuestions)}
           </TabsContent>
-          
+
           <TabsContent value="correct" className="mt-4">
             {renderQuestionList(correctQuestions)}
           </TabsContent>
-          
+
           <TabsContent value="unattempted" className="mt-4">
             {renderQuestionList(unattemptedQuestions)}
           </TabsContent>
         </Tabs>
-       </CardContent>
-     </Card>
-   );
- };
+      </CardContent>
+    </Card>
+  );
+};
+
+// Sub-component for loading images from private storage
+const QuestionImageDisplay = ({ imagePath, alt, className = "" }: { imagePath: string; alt: string; className?: string }) => {
+  const [url, setUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadUrl = async () => {
+      setLoading(true);
+      setError(false);
+      const { data, error: signErr } = await supabase.storage
+        .from("question-papers")
+        .createSignedUrl(imagePath, 3600);
+      
+      if (cancelled) return;
+      if (signErr || !data) {
+        setError(true);
+        setLoading(false);
+        return;
+      }
+      setUrl(data.signedUrl);
+      setLoading(false);
+    };
+    loadUrl();
+    return () => { cancelled = true; };
+  }, [imagePath]);
+
+  if (loading) {
+    return <div className={cn("bg-muted animate-pulse rounded h-16", className)} />;
+  }
+  if (error || !url) {
+    return <div className={cn("bg-muted rounded p-2 text-xs text-muted-foreground", className)}>Image unavailable</div>;
+  }
+  return (
+    <img
+      src={url}
+      alt={alt}
+      className={cn("rounded max-w-full object-contain", className)}
+      loading="lazy"
+    />
+  );
+};
