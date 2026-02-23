@@ -31,7 +31,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Plus, Pencil, Trash2, LogOut, Loader2, Upload, Calendar as CalendarIcon, Database, FileText, Key, RefreshCw, Bug, RotateCcw, AlertTriangle } from "lucide-react";
+import { Plus, Pencil, Trash2, LogOut, Loader2, Upload, Calendar as CalendarIcon, Database, FileText, Key, RefreshCw, Bug, RotateCcw, AlertTriangle, FileImage } from "lucide-react";
 import { Test, MarkingRules } from "@/lib/types";
 import { useToast } from "@/hooks/use-toast";
 import { SHIFTS, getExamDateLabel } from "@/lib/examDates";
@@ -41,6 +41,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { cn } from "@/lib/utils";
 import { useAdminAuth } from "@/hooks/useAdminAuth";
 import { UpdateKeysModal } from "@/components/admin/UpdateKeysModal";
+import { UploadQuestionPaperModal } from "@/components/admin/UploadQuestionPaperModal";
  import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 const defaultMarkingRules: MarkingRules = {
@@ -81,6 +82,10 @@ const AdminTests = () => {
   // Update Keys Modal state
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
   const [selectedTestForUpdate, setSelectedTestForUpdate] = useState<TestWithKeyCount | null>(null);
+  
+  // Question Paper Upload Modal state
+  const [qpModalOpen, setQpModalOpen] = useState(false);
+  const [selectedTestForQP, setSelectedTestForQP] = useState<TestWithKeyCount | null>(null);
 
   // Form state
   const [name, setName] = useState("");
@@ -1020,6 +1025,17 @@ const AdminTests = () => {
                                   <Button
                                     variant="ghost"
                                     size="icon"
+                                    onClick={() => {
+                                      setSelectedTestForQP(test);
+                                      setQpModalOpen(true);
+                                    }}
+                                    title="Upload Question Paper"
+                                  >
+                                    <FileImage className="w-4 h-4" />
+                                  </Button>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
                                     onClick={() => openEditDialog(test)}
                                     title="Edit"
                                   >
@@ -1059,6 +1075,21 @@ const AdminTests = () => {
           shift: selectedTestForUpdate.shift,
           key_count: selectedTestForUpdate.key_count || 0,
           updated_at: selectedTestForUpdate.updated_at,
+        } : null}
+        onSuccess={() => {
+          fetchTestsWithKeyCounts(false);
+        }}
+      />
+
+      {/* Upload Question Paper Modal */}
+      <UploadQuestionPaperModal
+        open={qpModalOpen}
+        onOpenChange={setQpModalOpen}
+        test={selectedTestForQP ? {
+          id: selectedTestForQP.id,
+          name: selectedTestForQP.name,
+          exam_date: selectedTestForQP.exam_date || "",
+          shift: selectedTestForQP.shift,
         } : null}
         onSuccess={() => {
           fetchTestsWithKeyCounts(false);

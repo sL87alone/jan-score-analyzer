@@ -738,7 +738,7 @@ const Result = () => {
             {/* Question-wise Analysis (Owner only) */}
             {questionResults.length > 0 && (
               <div className="mb-8">
-                <QuestionAnalysis questionResults={questionResults} />
+                <QuestionAnalysis questionResults={questionResults} testId={submission?.test_id} />
               </div>
             )}
  

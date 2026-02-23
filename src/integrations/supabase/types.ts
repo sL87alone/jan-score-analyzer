@@ -64,6 +64,70 @@ export type Database = {
           },
         ]
       }
+      question_options: {
+        Row: {
+          created_at: string
+          id: string
+          option_image_url: string
+          option_number: number
+          question_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          option_image_url: string
+          option_number: number
+          question_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          option_image_url?: string
+          option_number?: number
+          question_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "question_options_question_id_fkey"
+            columns: ["question_id"]
+            isOneToOne: false
+            referencedRelation: "questions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      questions: {
+        Row: {
+          created_at: string
+          id: string
+          question_image_url: string
+          question_number: number
+          test_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          question_image_url: string
+          question_number: number
+          test_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          question_image_url?: string
+          question_number?: number
+          test_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "questions_test_id_fkey"
+            columns: ["test_id"]
+            isOneToOne: false
+            referencedRelation: "tests"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       responses: {
         Row: {
           claimed_numeric_value: number | null
