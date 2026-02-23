@@ -38,6 +38,28 @@ import { QuestionResult } from "@/lib/questionParser";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/integrations/supabase/client";
 
+/** Convert 1/2/3/4 or "1"/"2"/"3"/"4" → A/B/C/D. Pass-through A–D. Returns null otherwise. */
+const toOptionLetter = (value: string | number | null | undefined): string | null => {
+  if (value == null) return null;
+  const s = String(value).trim().toUpperCase();
+  if (/^[A-D]$/.test(s)) return s;
+  const n = parseInt(s, 10);
+  if (n >= 1 && n <= 4) return String.fromCharCode(64 + n);
+  return null;
+};
+
+/** Resolve an option-id to its A/B/C/D label using the options array */
+const resolveOptionLabel = (
+  optionId: string | number | null | undefined,
+  options: { id: string; label: string }[],
+): string | null => {
+  if (optionId == null) return null;
+  const direct = toOptionLetter(optionId);
+  if (direct) return direct;
+  const match = options.find((o) => o.id === String(optionId));
+  return match ? match.label : null;
+};
+
 interface QuestionAnalysisProps {
   questionResults: QuestionResult[];
   testId?: string | null;
@@ -343,6 +365,55 @@ export const QuestionAnalysis = ({ questionResults, testId, isSharedView = false
                         })}
                       </div>
                     )}
+
+                    {/* MCQ Chosen / Correct summary (Section A only) */}
+                    {q.section === "A" && (() => {
+                      const chosenLetter = resolveOptionLabel(q.user_answer, q.options);
+                      const correctLetter = resolveOptionLabel(q.correct_answer, q.options);
+                      const chosenOptNum = chosenLetter ? chosenLetter.charCodeAt(0) - 64 : null;
+                      const correctOptNum = correctLetter ? correctLetter.charCodeAt(0) - 64 : null;
+                      const chosenImgUrl = chosenOptNum && qImage?.options.find(o => o.option_number === chosenOptNum)?.option_url;
+                      const correctImgUrl = correctOptNum && qImage?.options.find(o => o.option_number === correctOptNum)?.option_url;
+
+                      return (
+                        <div className="grid grid-cols-2 gap-3 text-sm">
+                          <div className={cn(
+                            "p-2 rounded border",
+                            q.is_correct && q.attempted ? "border-success bg-success/10" :
+                            !q.is_correct && q.attempted ? "border-destructive bg-destructive/10" :
+                            "border-border bg-muted"
+                          )}>
+                            <p className="text-xs text-muted-foreground mb-1">
+                              {isSharedView ? "Chosen Option" : "Your Chosen Option"}
+                            </p>
+                            {!isSharedView ? (
+                              <>
+                                <p className={cn(
+                                  "font-mono font-semibold text-lg",
+                                  q.is_correct ? "text-success" : q.attempted ? "text-destructive" : "text-muted-foreground"
+                                )}>
+                                  {chosenLetter ?? "Not attempted"}
+                                </p>
+                                {chosenImgUrl && (
+                                  <img src={chosenImgUrl} alt={`Option ${chosenLetter}`} className="mt-1 max-h-12 rounded object-contain" loading="lazy" />
+                                )}
+                              </>
+                            ) : (
+                              <p className="font-mono text-muted-foreground">Hidden</p>
+                            )}
+                          </div>
+                          <div className="p-2 rounded border border-success bg-success/10">
+                            <p className="text-xs text-muted-foreground mb-1">Correct Answer</p>
+                            <p className="font-mono font-semibold text-lg text-success">
+                              {correctLetter ?? "Not available"}
+                            </p>
+                            {correctImgUrl && (
+                              <img src={correctImgUrl} alt={`Option ${correctLetter}`} className="mt-1 max-h-12 rounded object-contain" loading="lazy" />
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {/* Numerical answer */}
                     {q.section === "B" && (
