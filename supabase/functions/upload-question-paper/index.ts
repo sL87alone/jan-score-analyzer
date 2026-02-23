@@ -7,7 +7,7 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
 };
 
-// Verify admin token with HMAC-SHA256 signature (same as admin-manage-tests)
+// Verify admin token with HMAC-SHA256 signature
 async function verifyAdminToken(token: string): Promise<{ valid: boolean; adminId?: string }> {
   try {
     const parts = token.split('.');
@@ -78,9 +78,53 @@ Deno.serve(async (req: Request) => {
     }
 
     const body = await req.json();
-    const { test_id, images } = body;
+    const { test_id, action, images, mode } = body;
 
-    // images: Array<{ path: string, data: string (base64), question_number: number, option_number?: number }>
+    // ── STATUS action: return current image counts ──
+    if (action === "status") {
+      if (!test_id) {
+        return new Response(JSON.stringify({ error: "test_id required" }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: questions, error: qErr } = await supabaseAdmin
+        .from("questions")
+        .select("id, created_at")
+        .eq("test_id", test_id);
+
+      const questionCount = questions?.length || 0;
+      let optionCount = 0;
+      let lastUpdated: string | null = null;
+
+      if (questions && questions.length > 0) {
+        // Get latest created_at from questions
+        lastUpdated = questions.reduce((latest: string, q: any) => {
+          return q.created_at > latest ? q.created_at : latest;
+        }, questions[0].created_at);
+
+        const questionIds = questions.map((q: any) => q.id);
+        const { count } = await supabaseAdmin
+          .from("question_options")
+          .select("id", { count: "exact", head: true })
+          .in("question_id", questionIds);
+
+        optionCount = count || 0;
+      }
+
+      return new Response(
+        JSON.stringify({
+          questionCount,
+          optionCount,
+          totalImages: questionCount + optionCount,
+          lastUpdated,
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // ── UPLOAD action (default) ──
     if (!test_id || !images || !Array.isArray(images) || images.length === 0) {
       return new Response(
         JSON.stringify({ error: "test_id and images array required" }),
@@ -90,6 +134,8 @@ Deno.serve(async (req: Request) => {
         }
       );
     }
+
+    const uploadMode = mode || "replace";
 
     // Verify test exists
     const { data: testData, error: testErr } = await supabaseAdmin
@@ -110,30 +156,40 @@ Deno.serve(async (req: Request) => {
     const shiftSlug = testData.shift.toLowerCase().replace(/\s+/g, "-");
     const storagePath = `${dateSlug}/${shiftSlug}`;
 
-    // Delete existing questions for this test (full replace)
-    await supabaseAdmin.from("question_options").delete().in(
-      "question_id",
-      (
-        await supabaseAdmin
-          .from("questions")
-          .select("id")
-          .eq("test_id", test_id)
-      ).data?.map((q: any) => q.id) || []
-    );
-    await supabaseAdmin.from("questions").delete().eq("test_id", test_id);
+    // ── REPLACE mode: delete all existing data first ──
+    if (uploadMode === "replace") {
+      const { data: existingQuestions } = await supabaseAdmin
+        .from("questions")
+        .select("id")
+        .eq("test_id", test_id);
 
-    // Upload images to storage and create DB records
+      if (existingQuestions && existingQuestions.length > 0) {
+        const qIds = existingQuestions.map((q: any) => q.id);
+        await supabaseAdmin.from("question_options").delete().in("question_id", qIds);
+      }
+      await supabaseAdmin.from("questions").delete().eq("test_id", test_id);
+
+      // Also clean storage folder
+      const { data: storageFiles } = await supabaseAdmin.storage
+        .from("question-papers")
+        .list(storagePath);
+
+      if (storageFiles && storageFiles.length > 0) {
+        const paths = storageFiles.map((f: any) => `${storagePath}/${f.name}`);
+        await supabaseAdmin.storage.from("question-papers").remove(paths);
+      }
+    }
+
+    // Upload images to storage and build question map
     const questionMap = new Map<
       number,
       { imageUrl: string; options: { num: number; url: string }[] }
     >();
 
-    // First pass: upload all images
     for (const img of images) {
       const fileData = base64Decode(img.data);
       const filePath = `${storagePath}/${img.path}`;
 
-      // Upload to storage (upsert)
       const { error: uploadErr } = await supabaseAdmin.storage
         .from("question-papers")
         .upload(filePath, fileData, {
@@ -146,18 +202,9 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
-      // Get public URL (signed URL since bucket is private)
-      const {
-        data: { publicUrl },
-      } = supabaseAdmin.storage
-        .from("question-papers")
-        .getPublicUrl(filePath);
-
-      // Store the URL - we'll use signed URLs on the client side
-      const url = filePath; // Store path, generate signed URL on client
+      const url = filePath;
 
       if (img.option_number) {
-        // This is an option image
         if (!questionMap.has(img.question_number)) {
           questionMap.set(img.question_number, { imageUrl: "", options: [] });
         }
@@ -166,7 +213,6 @@ Deno.serve(async (req: Request) => {
           url,
         });
       } else {
-        // This is a question image
         if (!questionMap.has(img.question_number)) {
           questionMap.set(img.question_number, { imageUrl: url, options: [] });
         } else {
@@ -175,13 +221,62 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    // Second pass: create DB records
+    // Create/upsert DB records
     let questionsCreated = 0;
+    let questionsUpdated = 0;
     let optionsCreated = 0;
 
     for (const [qNum, qData] of questionMap) {
       if (!qData.imageUrl) continue;
 
+      if (uploadMode === "merge") {
+        // Check if question already exists
+        const { data: existing } = await supabaseAdmin
+          .from("questions")
+          .select("id")
+          .eq("test_id", test_id)
+          .eq("question_number", qNum)
+          .maybeSingle();
+
+        if (existing) {
+          // Update existing question
+          await supabaseAdmin
+            .from("questions")
+            .update({ question_image_url: qData.imageUrl })
+            .eq("id", existing.id);
+
+          questionsUpdated++;
+
+          // Upsert options
+          if (qData.options.length > 0) {
+            for (const opt of qData.options) {
+              const { data: existingOpt } = await supabaseAdmin
+                .from("question_options")
+                .select("id")
+                .eq("question_id", existing.id)
+                .eq("option_number", opt.num)
+                .maybeSingle();
+
+              if (existingOpt) {
+                await supabaseAdmin
+                  .from("question_options")
+                  .update({ option_image_url: opt.url })
+                  .eq("id", existingOpt.id);
+              } else {
+                await supabaseAdmin.from("question_options").insert({
+                  question_id: existing.id,
+                  option_number: opt.num,
+                  option_image_url: opt.url,
+                });
+                optionsCreated++;
+              }
+            }
+          }
+          continue;
+        }
+      }
+
+      // Insert new question (replace mode or merge mode with no existing)
       const { data: qRecord, error: qErr } = await supabaseAdmin
         .from("questions")
         .insert({
@@ -198,7 +293,6 @@ Deno.serve(async (req: Request) => {
       }
       questionsCreated++;
 
-      // Insert options
       if (qData.options.length > 0) {
         const optionRows = qData.options.map((opt) => ({
           question_id: qRecord.id,
@@ -221,7 +315,9 @@ Deno.serve(async (req: Request) => {
     return new Response(
       JSON.stringify({
         success: true,
+        mode: uploadMode,
         questionsCreated,
+        questionsUpdated,
         optionsCreated,
         storagePath,
       }),
