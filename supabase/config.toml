@@ -23,3 +23,6 @@ verify_jwt = false
 
 [functions.upload-question-paper]
 verify_jwt = false
+
+[functions.paper-signed-urls]
+verify_jwt = false

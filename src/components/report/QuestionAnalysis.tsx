@@ -32,6 +32,7 @@ import {
   ChevronUp,
   Filter,
   Image as ImageIcon,
+  Loader2,
 } from "lucide-react";
 import { QuestionResult } from "@/lib/questionParser";
 import { cn } from "@/lib/utils";
@@ -47,10 +48,10 @@ type StatusTab = "wrong" | "correct" | "unattempted";
 type SubjectFilter = "all" | "Mathematics" | "Physics" | "Chemistry";
 type SectionFilter = "all" | "A" | "B";
 
-interface QuestionImage {
+interface SignedQuestionImage {
   question_number: number;
-  question_image_url: string;
-  options: { option_number: number; option_image_url: string }[];
+  question_url: string | null;
+  options: { option_number: number; option_url: string | null }[];
 }
 
 export const QuestionAnalysis = ({ questionResults, testId, isSharedView = false }: QuestionAnalysisProps) => {
@@ -60,67 +61,57 @@ export const QuestionAnalysis = ({ questionResults, testId, isSharedView = false
   const [searchQuery, setSearchQuery] = useState("");
   const [expandedQuestions, setExpandedQuestions] = useState<Set<string>>(new Set());
   const [showAllExpanded, setShowAllExpanded] = useState(false);
-  const [questionImages, setQuestionImages] = useState<Map<number, QuestionImage>>(new Map());
+  const [questionImages, setQuestionImages] = useState<Map<number, SignedQuestionImage>>(new Map());
   const [imagesLoading, setImagesLoading] = useState(false);
+  const [imagesError, setImagesError] = useState<string | null>(null);
 
-  // Fetch question images if available
+  // Fetch signed URLs from edge function
   useEffect(() => {
-    if (!testId) return;
-    
-    const fetchImages = async () => {
-      setImagesLoading(true);
-      try {
-        const { data: questions, error } = await supabase
-          .from("questions")
-          .select("id, question_number, question_image_url")
-          .eq("test_id", testId)
-          .order("question_number");
+    if (!testId || isSharedView) return;
 
-        if (error || !questions || questions.length === 0) {
+    const fetchSignedUrls = async () => {
+      setImagesLoading(true);
+      setImagesError(null);
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const accessToken = sessionData?.session?.access_token;
+        if (!accessToken) {
           setImagesLoading(false);
           return;
         }
 
-        const qIds = questions.map(q => q.id);
-        const { data: options } = await supabase
-          .from("question_options")
-          .select("question_id, option_number, option_image_url")
-          .in("question_id", qIds);
+        const { data, error } = await supabase.functions.invoke("paper-signed-urls", {
+          body: { test_id: testId },
+        });
 
-        const imageMap = new Map<number, QuestionImage>();
+        if (error) {
+          console.error("Failed to fetch signed URLs:", error);
+          setImagesError("Could not load question images");
+          setImagesLoading(false);
+          return;
+        }
+
+        const questions: SignedQuestionImage[] = data?.questions || [];
+        if (questions.length === 0) {
+          setImagesLoading(false);
+          return;
+        }
+
+        const imageMap = new Map<number, SignedQuestionImage>();
         for (const q of questions) {
-          const qOptions = (options || [])
-            .filter(o => o.question_id === q.id)
-            .sort((a, b) => a.option_number - b.option_number);
-          
-          imageMap.set(q.question_number, {
-            question_number: q.question_number,
-            question_image_url: q.question_image_url,
-            options: qOptions.map(o => ({
-              option_number: o.option_number,
-              option_image_url: o.option_image_url,
-            })),
-          });
+          imageMap.set(q.question_number, q);
         }
         setQuestionImages(imageMap);
       } catch (err) {
         console.error("Failed to fetch question images:", err);
+        setImagesError("Could not load question images");
       } finally {
         setImagesLoading(false);
       }
     };
 
-    fetchImages();
-  }, [testId]);
-
-  // Generate signed URL for private storage
-  const getSignedUrl = async (path: string): Promise<string | null> => {
-    const { data, error } = await supabase.storage
-      .from("question-papers")
-      .createSignedUrl(path, 3600); // 1 hour
-    if (error) return null;
-    return data.signedUrl;
-  };
+    fetchSignedUrls();
+  }, [testId, isSharedView]);
 
   // Filter questions by tab status
   const filterByStatus = (questions: QuestionResult[], status: StatusTab) => {
@@ -239,7 +230,7 @@ export const QuestionAnalysis = ({ questionResults, testId, isSharedView = false
                     <Badge variant="outline" className="text-xs">
                       Sec {q.section} ({getSectionLabel(q.section)})
                     </Badge>
-                    {qImage && (
+                    {qImage && qImage.question_url && (
                       <ImageIcon className="w-3 h-3 text-primary" />
                     )}
                     <Badge
@@ -262,22 +253,31 @@ export const QuestionAnalysis = ({ questionResults, testId, isSharedView = false
                 {/* Expanded content */}
                 <CollapsibleContent>
                   <div className="p-3 pt-0 space-y-3 border-t bg-muted/20">
-                    {/* Question Image */}
-                    {qImage && (
-                      <QuestionImageDisplay
-                        imagePath={qImage.question_image_url}
+                    {/* Question Image from signed URL */}
+                    {qImage && qImage.question_url && (
+                      <img
+                        src={qImage.question_url}
                         alt={`Question ${q.qno}`}
+                        className="rounded max-w-full object-contain"
+                        loading="lazy"
                       />
                     )}
 
-                    {/* Question text (fallback if no image) */}
+                    {/* Fallback if no image */}
                     {!qImage && q.question_text && q.question_text !== `Question ${q.qno}` && (
                       <p className="text-sm text-muted-foreground line-clamp-3">
                         {q.question_text}
                       </p>
                     )}
 
-                    {/* MCQ Options with images */}
+                    {/* No image available message */}
+                    {qImage && !qImage.question_url && (
+                      <p className="text-sm text-muted-foreground italic">
+                        Paper image not available for Q{q.qno}
+                      </p>
+                    )}
+
+                    {/* MCQ Options with images from signed URLs */}
                     {qImage && qImage.options.length > 0 && q.section === "A" && (
                       <div className="space-y-2">
                         {qImage.options.map(opt => {
@@ -298,11 +298,16 @@ export const QuestionAnalysis = ({ questionResults, testId, isSharedView = false
                             >
                               <span className="font-mono w-6 text-center mt-1">{optLabel}.</span>
                               <div className="flex-1">
-                                <QuestionImageDisplay
-                                  imagePath={opt.option_image_url}
-                                  alt={`Option ${optLabel}`}
-                                  className="max-h-24"
-                                />
+                                {opt.option_url ? (
+                                  <img
+                                    src={opt.option_url}
+                                    alt={`Option ${optLabel}`}
+                                    className="rounded max-w-full object-contain max-h-24"
+                                    loading="lazy"
+                                  />
+                                ) : (
+                                  <span className="text-muted-foreground">Option {optLabel}</span>
+                                )}
                               </div>
                               {isCorrect && <CheckCircle className="w-4 h-4 text-success mt-1" />}
                               {isUserSelected && !isCorrect && <XCircle className="w-4 h-4 text-destructive mt-1" />}
@@ -312,7 +317,7 @@ export const QuestionAnalysis = ({ questionResults, testId, isSharedView = false
                       </div>
                     )}
 
-                    {/* MCQ Options (text-only fallback) */}
+                    {/* MCQ Options (text-only fallback when no images) */}
                     {(!qImage || qImage.options.length === 0) && q.options.length > 0 && (
                       <div className="space-y-2">
                         {q.options.map(opt => {
@@ -391,6 +396,7 @@ export const QuestionAnalysis = ({ questionResults, testId, isSharedView = false
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div className="flex items-center gap-2">
             <CardTitle>Question-wise Paper Review</CardTitle>
+            {imagesLoading && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
             {hasImages && (
               <Badge variant="outline" className="text-xs border-primary text-primary">
                 <ImageIcon className="w-3 h-3 mr-1" />
@@ -430,6 +436,12 @@ export const QuestionAnalysis = ({ questionResults, testId, isSharedView = false
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {imagesError && (
+          <div className="text-sm text-destructive bg-destructive/10 p-2 rounded">
+            {imagesError}
+          </div>
+        )}
+
         {/* Filters row */}
         <div className="flex flex-wrap gap-3 p-3 bg-muted/50 rounded-lg">
           <div className="flex items-center gap-2">
@@ -500,49 +512,5 @@ export const QuestionAnalysis = ({ questionResults, testId, isSharedView = false
         </Tabs>
       </CardContent>
     </Card>
-  );
-};
-
-// Sub-component for loading images from private storage
-const QuestionImageDisplay = ({ imagePath, alt, className = "" }: { imagePath: string; alt: string; className?: string }) => {
-  const [url, setUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    const loadUrl = async () => {
-      setLoading(true);
-      setError(false);
-      const { data, error: signErr } = await supabase.storage
-        .from("question-papers")
-        .createSignedUrl(imagePath, 3600);
-      
-      if (cancelled) return;
-      if (signErr || !data) {
-        setError(true);
-        setLoading(false);
-        return;
-      }
-      setUrl(data.signedUrl);
-      setLoading(false);
-    };
-    loadUrl();
-    return () => { cancelled = true; };
-  }, [imagePath]);
-
-  if (loading) {
-    return <div className={cn("bg-muted animate-pulse rounded h-16", className)} />;
-  }
-  if (error || !url) {
-    return <div className={cn("bg-muted rounded p-2 text-xs text-muted-foreground", className)}>Image unavailable</div>;
-  }
-  return (
-    <img
-      src={url}
-      alt={alt}
-      className={cn("rounded max-w-full object-contain", className)}
-      loading="lazy"
-    />
   );
 };
