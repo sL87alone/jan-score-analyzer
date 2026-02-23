@@ -66,6 +66,8 @@ export interface ParsedResponse {
   claimed_option_ids?: string[];
   claimed_numeric_value?: number;
   is_attempted: boolean;
+  /** Maps option number (1-4) to NTA option ID for MCQ questions */
+  option_ids?: Record<string, string>;
 }
 
 export interface SubjectStats {

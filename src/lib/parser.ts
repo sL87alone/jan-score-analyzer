@@ -24,6 +24,7 @@ function deduplicateResponses(responses: ParsedResponse[]): ParsedResponse[] {
         claimed_option_ids: r.claimed_option_ids?.map(id => String(id)),
         claimed_numeric_value: r.claimed_numeric_value,
         is_attempted: r.is_attempted,
+        option_ids: r.option_ids,
       });
     } else {
       // Merge: keep the answer that exists
@@ -53,6 +54,9 @@ function deduplicateResponses(responses: ParsedResponse[]): ParsedResponse[] {
       merged.is_attempted = merged.claimed_numeric_value !== undefined || 
                            (merged.claimed_option_ids && merged.claimed_option_ids.length > 0);
       
+      // Preserve option_ids from whichever has them
+      merged.option_ids = existing.option_ids || r.option_ids;
+
       map.set(qid, merged);
     }
   }

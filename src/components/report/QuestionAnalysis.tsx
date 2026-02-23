@@ -392,7 +392,7 @@ export const QuestionAnalysis = ({ questionResults, testId, isSharedView = false
                                   "font-mono font-semibold text-lg",
                                   q.is_correct ? "text-success" : q.attempted ? "text-destructive" : "text-muted-foreground"
                                 )}>
-                                  {chosenLetter ?? "Not attempted"}
+                                  {chosenLetter ?? (q.attempted ? "Paper mapping missing" : "Not attempted")}
                                 </p>
                                 {chosenImgUrl && (
                                   <img src={chosenImgUrl} alt={`Option ${chosenLetter}`} className="mt-1 max-h-12 rounded object-contain" loading="lazy" />
@@ -405,7 +405,7 @@ export const QuestionAnalysis = ({ questionResults, testId, isSharedView = false
                           <div className="p-2 rounded border border-success bg-success/10">
                             <p className="text-xs text-muted-foreground mb-1">Correct Answer</p>
                             <p className="font-mono font-semibold text-lg text-success">
-                              {correctLetter ?? "Not available"}
+                              {correctLetter ?? (q.correct_answer == null ? "Key not uploaded" : "Paper mapping missing")}
                             </p>
                             {correctImgUrl && (
                               <img src={correctImgUrl} alt={`Option ${correctLetter}`} className="mt-1 max-h-12 rounded object-contain" loading="lazy" />
