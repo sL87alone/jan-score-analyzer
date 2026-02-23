@@ -1,5 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { decode } from "https://deno.land/std@0.203.0/encoding/base64.ts";
+import { decode as base64Decode } from "https://deno.land/std@0.208.0/encoding/base64.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -7,48 +7,44 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
 };
 
-// Verify admin session token (same as other admin functions)
-async function verifyAdminToken(
-  token: string,
-  supabaseAdmin: ReturnType<typeof createClient>
-): Promise<boolean> {
-  const adminId = Deno.env.get("ADMIN_ID");
-  const adminPassword = Deno.env.get("ADMIN_PASSWORD");
-  if (!adminId || !adminPassword) return false;
-
-  // Decode the token (format: payload.signature)
-  const parts = token.split(".");
-  if (parts.length !== 2) return false;
-
+// Verify admin token with HMAC-SHA256 signature (same as admin-manage-tests)
+async function verifyAdminToken(token: string): Promise<{ valid: boolean; adminId?: string }> {
   try {
-    const payloadStr = atob(parts[0]);
-    const payload = JSON.parse(payloadStr);
+    const parts = token.split('.');
+    if (parts.length !== 3) return { valid: false };
 
-    // Check expiry
-    if (new Date(payload.exp) < new Date()) return false;
-    if (payload.adminId !== adminId) return false;
+    const [header, body, sig] = parts;
+    const secret = Deno.env.get('ADMIN_PASSWORD');
+    if (!secret) {
+      console.error('[upload-question-paper] ADMIN_PASSWORD not configured');
+      return { valid: false };
+    }
 
-    // Verify signature
     const encoder = new TextEncoder();
     const key = await crypto.subtle.importKey(
-      "raw",
-      encoder.encode(adminPassword),
-      { name: "HMAC", hash: "SHA-256" },
+      'raw',
+      encoder.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
       false,
-      ["sign"]
-    );
-    const signatureBytes = await crypto.subtle.sign(
-      "HMAC",
-      key,
-      encoder.encode(parts[0])
-    );
-    const expectedSig = btoa(
-      String.fromCharCode(...new Uint8Array(signatureBytes))
+      ['verify']
     );
 
-    return expectedSig === parts[1];
+    const sigBytes = base64Decode(sig);
+    const signatureValid = await crypto.subtle.verify(
+      'HMAC',
+      key,
+      new Uint8Array(sigBytes).buffer,
+      encoder.encode(`${header}.${body}`)
+    );
+
+    if (!signatureValid) return { valid: false };
+
+    const payload = JSON.parse(new TextDecoder().decode(base64Decode(body)));
+    if (Date.now() > payload.exp) return { valid: false };
+
+    return { valid: true, adminId: payload.adminId };
   } catch {
-    return false;
+    return { valid: false };
   }
 }
 
@@ -73,8 +69,8 @@ Deno.serve(async (req: Request) => {
     }
 
     const token = authHeader.replace("Bearer ", "");
-    const isValid = await verifyAdminToken(token, supabaseAdmin);
-    if (!isValid) {
+    const tokenResult = await verifyAdminToken(token);
+    if (!tokenResult.valid) {
       return new Response(JSON.stringify({ error: "Invalid admin token" }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -134,7 +130,7 @@ Deno.serve(async (req: Request) => {
 
     // First pass: upload all images
     for (const img of images) {
-      const fileData = decode(img.data);
+      const fileData = base64Decode(img.data);
       const filePath = `${storagePath}/${img.path}`;
 
       // Upload to storage (upsert)
