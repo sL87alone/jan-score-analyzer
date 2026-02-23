@@ -11,6 +11,8 @@ interface ParsedResponse {
   is_attempted: boolean;
   claimed_option_ids?: string[];
   claimed_numeric_value?: number | null;
+  /** Maps option number (1-4) to NTA option ID */
+  option_ids?: Record<string, string>;
    // Optional extended data for question analysis
    question_text?: string;
    options?: { id: string; label: string; text: string }[];
@@ -290,6 +292,36 @@ function calculateScores(
     totalMarks += marksAwarded;
     if (subjectScores[subject]) subjectScores[subject].marks += marksAwarded;
 
+    // Build options array from option_ids map (option number → NTA option ID)
+    const optionIdsMap = parsed.option_ids || {};
+    const builtOptions: { id: string; label: string; text: string }[] = [];
+    for (let i = 1; i <= 4; i++) {
+      const optId = optionIdsMap[String(i)];
+      if (optId) {
+        builtOptions.push({
+          id: String(optId),
+          label: String.fromCharCode(64 + i), // A, B, C, D
+          text: `Option ${String.fromCharCode(64 + i)}`,
+        });
+      }
+    }
+    // Use parsed.options if available, otherwise use built options
+    const finalOptions = (parsed.options && parsed.options.length > 0) ? parsed.options : builtOptions;
+
+    // Helper: resolve an option ID to its letter using the options array
+    const idToLetter = (optId: string | number | null): string | null => {
+      if (optId == null) return null;
+      const s = String(optId).trim();
+      // Check if already a letter
+      if (/^[A-Da-d]$/.test(s)) return s.toUpperCase();
+      // Check if 1-4
+      const n = parseInt(s, 10);
+      if (n >= 1 && n <= 4 && s.length <= 1) return String.fromCharCode(64 + n);
+      // Look up in options
+      const match = finalOptions.find(o => o.id === s);
+      return match ? match.label : null;
+    };
+
     // Determine user answer for display
     let userAnswer: string | number | null = null;
     if (isNumerical) {
@@ -328,7 +360,7 @@ function calculateScores(
       user_answer: userAnswer,
       correct_answer: correctAnswer,
       question_text: parsed.question_text || `Question ${qno}`,
-      options: parsed.options || [],
+      options: finalOptions,
     });
   });
 

@@ -577,6 +577,13 @@ function buildResponse(
     }
   }
   
+  // Build option_ids map (string keys for JSON compatibility)
+  const optionIdsMap: Record<string, string> = {};
+  for (const [num, id] of Object.entries(optionIds)) {
+    optionIdsMap[String(num)] = String(id);
+  }
+  const hasOptionIdsMap = Object.keys(optionIdsMap).length > 0;
+
   // MCQ handling
   if (hasChosenOption) {
     const optNum = parseInt(chosenOption, 10);
@@ -587,6 +594,7 @@ function buildResponse(
           question_id: String(questionId),
           claimed_option_ids: [String(optionId)],
           is_attempted: true,
+          ...(hasOptionIdsMap && { option_ids: optionIdsMap }),
         };
       }
       // Fallback to using option number directly
@@ -594,11 +602,16 @@ function buildResponse(
         question_id: String(questionId),
         claimed_option_ids: [String(optNum)],
         is_attempted: true,
+        ...(hasOptionIdsMap && { option_ids: optionIdsMap }),
       };
     }
   }
   
-  return { question_id: String(questionId), is_attempted: false };
+  return {
+    question_id: String(questionId),
+    is_attempted: false,
+    ...(hasOptionIdsMap && { option_ids: optionIdsMap }),
+  };
 }
 
 /**
